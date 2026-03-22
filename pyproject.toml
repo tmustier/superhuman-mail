@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "superhuman-mail"
+version = "0.1.0"
+description = "Unofficial Superhuman mail API client and agent-friendly CLI"
+requires-python = ">=3.11"
+license = "MIT"
+dependencies = ["cryptography"]
+
+[tool.setuptools.packages.find]
+include = ["superhuman_mail*"]
+
+[project.scripts]
+shm = "superhuman_mail.cli:main"

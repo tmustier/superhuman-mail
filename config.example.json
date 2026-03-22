@@ -1,0 +1,24 @@
+{
+  "email_account": "you@example.com",
+  "superhuman": {
+    "superhuman_base": "~/Library/Application Support/Superhuman",
+    "accounts": [
+      {
+        "email": "you@example.com",
+        "db_file": "00000001"
+      }
+    ]
+  },
+  "superhuman_api": {
+    "email": "you@example.com",
+    "author_name": "Your Name",
+    "google_id": "YOUR_GOOGLE_ACCOUNT_ID",
+    "google_id_help": "Find in Superhuman DevTools → Application → Cookies → accounts.superhuman.com. Look for a cookie whose NAME is a long number.",
+    "device_id": "YOUR_DEVICE_ID",
+    "device_id_help": "Find in Superhuman DevTools → Network → any API request → x-device-id header. Starts with 'native-'.",
+    "team_id": "YOUR_TEAM_ID",
+    "team_shard_key": "YOUR_SHARD_KEY",
+    "team_shard_key_help": "4-char substring from the team_id, after 'team_' prefix. e.g. team_XXXxXxXxXxXxXxXxX → shard key is chars 9-12 of the team_id.",
+    "version": "2026-03-12T15:51:10Z"
+  }
+}
