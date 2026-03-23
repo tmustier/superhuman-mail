@@ -16,6 +16,10 @@ from typing import Any
 
 from . import _config
 
+# Unicode filler chars Superhuman sometimes pads snippets with
+_UNICODE_JUNK_RE = re.compile(r"[\u200b\u200c\u200d\u034f\uf8f5\uf8f8]+")
+
+
 # ---------------------------------------------------------------------------
 # FTS delimiters used by Superhuman to separate messages in search content
 # ---------------------------------------------------------------------------
@@ -263,5 +267,209 @@ def get_messages(thread_id: str, account: str | None = None) -> list[dict[str, A
                 msg.pop("_snip", None)
 
         return messages
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Thread listing and search
+# ---------------------------------------------------------------------------
+
+
+def _clean_snippet(text: str) -> str:
+    """Strip Unicode filler chars Superhuman sometimes pads snippets with."""
+    return _UNICODE_JUNK_RE.sub("", text).strip()
+
+
+def _thread_summary(
+    raw: dict[str, Any],
+    thread_id: str,
+    sort_val: int | None = None,
+    include_participants: bool = False,
+) -> dict[str, Any]:
+    """Build a lean summary dict from raw thread JSON."""
+    messages = list(raw.get("messages", []) or [])
+    last = messages[-1] if messages else {}
+
+    # Last sender
+    from_info = last.get("from") or {}
+    from_dict = {
+        "email": str(from_info.get("email", "")),
+        "name": str(from_info.get("name", from_info.get("raw", ""))),
+    }
+
+    # Date
+    date_raw = last.get("date")
+    if isinstance(date_raw, (int, float)):
+        date_str = datetime.fromtimestamp(date_raw / 1000).isoformat()
+    elif date_raw is None:
+        # Fall back to sort value (epoch ms)
+        date_str = datetime.fromtimestamp(sort_val / 1000).isoformat() if sort_val else None
+    else:
+        date_str = str(date_raw)
+
+    # Subject
+    subject = str(last.get("subject", ""))
+    if not subject and messages:
+        subject = str(messages[0].get("subject", ""))
+
+    # Snippet
+    snippet = _clean_snippet(str(last.get("snippet", "")))
+
+    # Labels (from last message, deduplicated)
+    labels: list[str] = []
+    seen_labels: set[str] = set()
+    for msg in messages:
+        for lbl in (msg.get("labelIds") or []):
+            if lbl not in seen_labels:
+                seen_labels.add(lbl)
+                labels.append(lbl)
+
+    # Unread
+    unread = "UNREAD" in seen_labels
+
+    result: dict[str, Any] = {
+        "thread_id": thread_id,
+        "subject": subject,
+        "from": from_dict,
+        "last_message_at": date_str,
+        "unread": unread,
+        "snippet": snippet,
+        "labels": labels,
+        "message_count": len(messages),
+    }
+
+    if include_participants:
+        seen_emails: set[str] = set()
+        participants: list[dict[str, str]] = []
+        for msg in messages:
+            for field in ("from", "to", "cc"):
+                entries = msg.get(field)
+                if not entries:
+                    continue
+                if isinstance(entries, dict):
+                    entries = [entries]
+                for entry in entries:
+                    email = str(entry.get("email", "")).lower().strip()
+                    if email and email not in seen_emails:
+                        seen_emails.add(email)
+                        participants.append({
+                            "email": email,
+                            "name": str(entry.get("name", entry.get("raw", email))),
+                        })
+        result["participants"] = participants
+
+    return result
+
+
+def list_threads(
+    *,
+    limit: int = 20,
+    unread: bool = False,
+    include_participants: bool = False,
+    account: str | None = None,
+) -> list[dict[str, Any]]:
+    """List recent threads from the local DB, sorted by recency."""
+    conn = _connection(account)
+    try:
+        if unread:
+            rows = conn.execute(
+                """
+                SELECT t.thread_id, t.json, t.sort
+                FROM threads t
+                JOIN list_ids li ON li.thread_id = t.thread_id AND li.list_id = 'UNREAD'
+                WHERE t.in_spam_trash = 0
+                ORDER BY t.sort DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT thread_id, json, sort
+                FROM threads
+                WHERE in_spam_trash = 0
+                ORDER BY sort DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+
+        results: list[dict[str, Any]] = []
+        for row in rows:
+            tid = str(row[0])
+            raw = json.loads(row[1]) if row[1] else {}
+            sort_val = int(row[2]) if row[2] else None
+            results.append(_thread_summary(raw, tid, sort_val, include_participants))
+        return results
+    finally:
+        conn.close()
+
+
+def _sanitize_fts_query(query: str) -> str:
+    """Sanitize a user query for SQLite FTS MATCH.
+
+    Strips characters that would break FTS syntax, then ANDs the tokens.
+    """
+    # Remove FTS operators and special chars
+    cleaned = re.sub(r'[^\w\s]', ' ', query, flags=re.UNICODE)
+    tokens = cleaned.split()
+    if not tokens:
+        return ""
+    # Join with space (implicit AND in FTS3)
+    return " ".join(tokens)
+
+
+def search_threads(
+    query: str,
+    *,
+    limit: int = 10,
+    unread: bool = False,
+    include_participants: bool = False,
+    account: str | None = None,
+) -> list[dict[str, Any]]:
+    """Search threads using the local FTS index, sorted by recency."""
+    sanitized = _sanitize_fts_query(query)
+    if not sanitized:
+        return []
+
+    conn = _connection(account)
+    try:
+        if unread:
+            rows = conn.execute(
+                """
+                SELECT t.thread_id, t.json, t.sort
+                FROM thread_search ts
+                JOIN threads t ON t.thread_id = ts.thread_id
+                JOIN list_ids li ON li.thread_id = t.thread_id AND li.list_id = 'UNREAD'
+                WHERE thread_search MATCH ?
+                  AND t.in_spam_trash = 0
+                ORDER BY t.sort DESC
+                LIMIT ?
+                """,
+                (sanitized, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT t.thread_id, t.json, t.sort
+                FROM thread_search ts
+                JOIN threads t ON t.thread_id = ts.thread_id
+                WHERE thread_search MATCH ?
+                  AND t.in_spam_trash = 0
+                ORDER BY t.sort DESC
+                LIMIT ?
+                """,
+                (sanitized, limit),
+            ).fetchall()
+
+        results: list[dict[str, Any]] = []
+        for row in rows:
+            tid = str(row[0])
+            raw = json.loads(row[1]) if row[1] else {}
+            sort_val = int(row[2]) if row[2] else None
+            results.append(_thread_summary(raw, tid, sort_val, include_participants))
+        return results
     finally:
         conn.close()

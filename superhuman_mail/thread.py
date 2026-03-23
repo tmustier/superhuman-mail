@@ -69,3 +69,59 @@ def current_history_id(thread_id: str) -> int | None:
         return None
     hid = ud.get("historyId")
     return int(hid) if hid is not None else None
+
+
+def list_threads(
+    *,
+    limit: int = 20,
+    unread: bool = False,
+    include_participants: bool = False,
+    account: str | None = None,
+) -> dict[str, Any]:
+    """List recent threads from the local DB."""
+    try:
+        threads = _local.list_threads(
+            limit=limit,
+            unread=unread,
+            include_participants=include_participants,
+            account=account,
+        )
+        return ok("thread.list", {
+            "source": "local-db",
+            "limit": limit,
+            "returned": len(threads),
+            "threads": threads,
+        })
+    except Exception as e:
+        return fail("thread.list", [classify_exception(e)])
+
+
+def search(
+    query: str,
+    *,
+    limit: int = 10,
+    unread: bool = False,
+    include_participants: bool = False,
+    account: str | None = None,
+) -> dict[str, Any]:
+    """Search threads using the local FTS index."""
+    try:
+        threads = _local.search_threads(
+            query,
+            limit=limit,
+            unread=unread,
+            include_participants=include_participants,
+            account=account,
+        )
+        warnings: list[str] = []
+        if not threads:
+            warnings.append("No threads matched — try broader search terms")
+        return ok("thread.search", {
+            "query": query,
+            "source": "local-db",
+            "limit": limit,
+            "returned": len(threads),
+            "threads": threads,
+        }, warnings=warnings)
+    except Exception as e:
+        return fail("thread.search", [classify_exception(e)])

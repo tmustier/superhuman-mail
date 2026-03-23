@@ -64,6 +64,20 @@ All commands output a consistent JSON envelope:
 
 Use `shm schema` for the full command list, or `shm schema <command>` for details on a specific command.
 
+### Find threads
+
+If you don't know the thread ID, search or list first:
+
+```bash
+shm thread search "kalgin follow up"               # search local DB
+shm thread search "invoice" --limit 5 --unread      # only unread matches
+shm thread search "sarah" --participants            # include full participant list
+shm thread list --limit 10                          # recent threads
+shm thread list --unread                            # recent unread threads
+```
+
+Use `--fail-empty` to get exit code 3 on zero results (useful for branching).
+
 ### Read operations (always safe)
 
 ```bash
@@ -130,7 +144,8 @@ shm schema send                          # describe a specific command
 
 ### Reply to a thread
 
-1. `shm thread read <thread_id>` — understand the conversation
+1. `shm thread search "topic"` — find the thread (if you don't have the ID)
+2. `shm thread read <thread_id>` — understand the conversation
 2. `shm draft reply <thread_id> --body "..."` — create draft
 3. `shm send --dry-run <thread_id> <draft_id>` — show preview to user
 4. After user approves: `shm send --confirm <thread_id> <draft_id>`
@@ -157,4 +172,12 @@ If a command fails, check the `errors` array in the response:
 
 ## Finding thread IDs
 
-Thread IDs are hex strings like `19d001f35612a211`. The user can find them in the Superhuman URL bar, or you can look them up from the local DB if the user describes the email.
+Use `shm thread search` or `shm thread list` to find thread IDs. The user can also find them in the Superhuman URL bar.
+
+```bash
+# User says "reply to the email from Rob about the demo"
+shm thread search "rob demo"
+# → pick the matching thread_id from results
+shm thread read <thread_id>
+shm draft reply <thread_id> --body "..."
+```

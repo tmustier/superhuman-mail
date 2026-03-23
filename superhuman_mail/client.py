@@ -30,6 +30,14 @@ class _ThreadOps:
         """Read thread userdata from API."""
         return _thread.userdata(thread_id)
 
+    def list(self, **kwargs: Any) -> dict[str, Any]:
+        """List recent threads."""
+        return _thread.list_threads(**kwargs)
+
+    def search(self, query: str, **kwargs: Any) -> dict[str, Any]:
+        """Search threads."""
+        return _thread.search(query, **kwargs)
+
 
 class _DraftOps:
     """Draft operations."""

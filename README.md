@@ -84,8 +84,11 @@ Every command outputs a consistent JSON envelope:
 ### Commands
 
 ```bash
-# Setup (run once — auto-detects everything from local Superhuman app)
-shm setup
+# Search and list threads
+shm thread search "kalgin follow up"
+shm thread search "invoice" --unread --limit 5
+shm thread list --limit 10
+shm thread list --unread --participants
 
 # Read thread messages from local DB
 shm thread read <thread_id>

@@ -40,6 +40,29 @@ SCHEMA: dict[str, dict[str, Any]] = {
         "safety": "read",
         "example": "shm thread userdata 19d001f35612a211",
     },
+    "thread.list": {
+        "description": "List recent threads from local DB, sorted by recency",
+        "args": {
+            "--limit": {"required": False, "type": "int", "default": 20},
+            "--unread": {"required": False, "type": "flag"},
+            "--participants": {"required": False, "type": "flag", "hint": "Include full participant list"},
+            "--fail-empty": {"required": False, "type": "flag", "hint": "Exit code 3 if no results"},
+        },
+        "safety": "read",
+        "example": "shm thread list --limit 10",
+    },
+    "thread.search": {
+        "description": "Search threads using the local FTS index, sorted by recency",
+        "args": {
+            "query": {"required": True, "type": "string"},
+            "--limit": {"required": False, "type": "int", "default": 10},
+            "--unread": {"required": False, "type": "flag"},
+            "--participants": {"required": False, "type": "flag", "hint": "Include full participant list"},
+            "--fail-empty": {"required": False, "type": "flag", "hint": "Exit code 3 if no results"},
+        },
+        "safety": "read",
+        "example": "shm thread search \"kalgin follow up\"",
+    },
     "draft.reply": {
         "description": "Create a reply draft on an existing thread",
         "args": {
@@ -265,6 +288,21 @@ def _build_parser() -> argparse.ArgumentParser:
     t_ud = tsub.add_parser("userdata", help="Read userdata from API")
     t_ud.add_argument("thread_id")
 
+    t_list = tsub.add_parser("list", help="List recent threads")
+    t_list.add_argument("--limit", type=int, default=20)
+    t_list.add_argument("--unread", action="store_true", help="Only unread threads")
+    t_list.add_argument("--participants", action="store_true", help="Include full participant list")
+    t_list.add_argument("--fail-empty", action="store_true", help="Exit code 3 if no results")
+    t_list.add_argument("--account")
+
+    t_search = tsub.add_parser("search", help="Search threads")
+    t_search.add_argument("query")
+    t_search.add_argument("--limit", type=int, default=10)
+    t_search.add_argument("--unread", action="store_true", help="Only unread threads")
+    t_search.add_argument("--participants", action="store_true", help="Include full participant list")
+    t_search.add_argument("--fail-empty", action="store_true", help="Exit code 3 if no results")
+    t_search.add_argument("--account")
+
     # -- draft --
     draft_p = sub.add_parser("draft", help="Draft operations")
     dsub = draft_p.add_subparsers(dest="action")
@@ -375,11 +413,24 @@ def main(argv: list[str] | None = None) -> int:
     # -- thread --
     if args.command == "thread":
         if not hasattr(args, "action") or not args.action:
-            emit(fail("thread", [error("input", "MISSING_ACTION", False, "Use: shm thread read|userdata")]))
+            emit(fail("thread", [error("input", "MISSING_ACTION", False, "Use: shm thread read|userdata|list|search")]))
         elif args.action == "read":
             emit(_thread.read(args.thread_id))
         elif args.action == "userdata":
             emit(_thread.userdata(args.thread_id))
+        elif args.action == "list":
+            result = _thread.list_threads(limit=args.limit, unread=args.unread, include_participants=args.participants, account=args.account)
+            if args.fail_empty and result["status"] == "succeeded" and result["data"]["returned"] == 0:
+                emit(result)  # emit still prints, but we override exit code
+                sys.exit(3)
+            emit(result)
+        elif args.action == "search":
+            result = _thread.search(args.query, limit=args.limit, unread=args.unread, include_participants=args.participants, account=args.account)
+            if args.fail_empty and result["status"] == "succeeded" and result["data"]["returned"] == 0:
+                json.dump(result, sys.stdout, indent=2, default=str)
+                sys.stdout.write("\n")
+                sys.exit(3)
+            emit(result)
 
     # -- draft --
     elif args.command == "draft":
