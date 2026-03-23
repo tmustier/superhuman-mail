@@ -12,6 +12,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from . import _auth, _config, _local, thread as _thread
 from ._envelope import classify_exception, fail, ok
@@ -238,6 +239,140 @@ def _text_to_html(text: str) -> str:
     return f"<div>{html_mod.escape(text).replace(chr(10), '<br>')}</div>"
 
 
+def _mailbox_tzinfo() -> Any:
+    try:
+        return ZoneInfo(_config.timezone())
+    except Exception:
+        return datetime.now().astimezone().tzinfo or timezone.utc
+
+
+
+def _parse_datetime(value: Any) -> datetime | None:
+    if not value:
+        return None
+    mailbox_tz = _mailbox_tzinfo()
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=mailbox_tz)
+    if isinstance(value, (int, float)):
+        return datetime.fromtimestamp(value / 1000, mailbox_tz)
+    if isinstance(value, str):
+        try:
+            if value.endswith("Z"):
+                return datetime.fromisoformat(value.replace("Z", "+00:00"))
+            parsed = datetime.fromisoformat(value)
+            return parsed if parsed.tzinfo else parsed.replace(tzinfo=mailbox_tz)
+        except ValueError:
+            return None
+    return None
+
+
+def _forward_time_html(value: Any) -> str:
+    dt = _parse_datetime(value)
+    if not dt:
+        return ""
+
+    iso_value = value if isinstance(value, str) else _to_backend_time(value)
+    hour = dt.hour % 12 or 12
+    ampm = "AM" if dt.hour < 12 else "PM"
+    tz_name = dt.tzname() or "UTC"
+    if tz_name == "UTC":
+        tz_name = "GMT"
+    display = f"{dt.strftime('%A')}, {dt.strftime('%B')} {dt.day} {dt.year} at {hour}:{dt.minute:02d} {ampm} {tz_name}"
+    return f'<time dateTime="{html_mod.escape(str(iso_value))}" class="DateTime">{html_mod.escape(display)}</time>'
+
+
+def _forward_contact_text(contact: dict[str, Any] | str | None) -> str:
+    if not contact:
+        return ""
+    normalized = _normalize_contact(contact)
+    email = normalized.get("email", "")
+    name = normalized.get("name", "")
+    if email and name and name.lower() != email.lower():
+        return f"{html_mod.escape(name)} &lt;{html_mod.escape(email)}&gt;"
+    return html_mod.escape(email or name)
+
+
+def _forward_contacts_text(contacts: list[dict[str, Any]] | None) -> str:
+    parts: list[str] = []
+    for contact in contacts or []:
+        rendered = _forward_contact_text(contact)
+        if rendered:
+            parts.append(rendered)
+    return ", ".join(parts)
+
+
+def _html_has_inline_cid_refs(html: str) -> bool:
+    lowered = html.lower()
+    return "cid:" in lowered or "src-cid=" in lowered
+
+
+
+def _body_html_from_value(body: Any) -> str:
+    if isinstance(body, dict):
+        html = str(body.get("html", "")).strip()
+        if html and not _html_has_inline_cid_refs(html):
+            return html
+        text = str(body.get("text", "")).strip()
+        if text:
+            return _text_to_html(text)
+    elif isinstance(body, str) and body.strip():
+        html = body.strip()
+        if not _html_has_inline_cid_refs(html):
+            return _text_to_html(html)
+    return ""
+
+
+def _forward_body_html(raw_message: dict[str, Any], rendered_message: dict[str, Any] | None = None) -> str:
+    rendered_html = _body_html_from_value((rendered_message or {}).get("body"))
+    if rendered_html:
+        return rendered_html
+
+    raw_html = _body_html_from_value(raw_message.get("body"))
+    if raw_html:
+        return raw_html
+
+    fallback = str(raw_message.get("snippet", "")).strip()
+    return _text_to_html(fallback) if fallback else "<div></div>"
+
+
+def _build_forward_quoted_content(raw_message: dict[str, Any], rendered_message: dict[str, Any] | None = None) -> str:
+    from_text = _forward_contact_text(raw_message.get("from"))
+    date_html = _forward_time_html(raw_message.get("date"))
+    subject = html_mod.escape(str(raw_message.get("subject", "")).strip())
+    to_text = _forward_contacts_text(list(raw_message.get("to", []) or []))
+    cc_text = _forward_contacts_text(list(raw_message.get("cc", []) or []))
+    body_html = _forward_body_html(raw_message, rendered_message)
+
+    lines = ["---------- Forwarded message ----------<br/>"]
+    if from_text:
+        lines.append(f"From: {from_text}<br/>")
+    if date_html:
+        lines.append(f"Date: {date_html}<br/>")
+    if subject:
+        lines.append(f"Subject: {subject}<br/>")
+    if to_text:
+        lines.append(f"To: {to_text}<br/>")
+    if cc_text:
+        lines.append(f"<span>Cc: {cc_text}<br/></span>")
+
+    return f"<div><div>{''.join(lines)}</div><br/><div>{body_html}</div></div>"
+
+
+def _find_forward_message(messages: list[dict[str, Any]]) -> tuple[int, dict[str, Any]]:
+    if not messages:
+        raise RuntimeError("Thread has no messages")
+    for index in range(len(messages) - 1, -1, -1):
+        if not _is_system_sender(messages[index]):
+            return index, messages[index]
+    return len(messages) - 1, messages[-1]
+
+
+def _inline_quoted_content(body_html: str, quoted_content: str) -> str:
+    if not quoted_content:
+        return body_html
+    return f'{body_html}<br><div class="sh-quoted-content sh-color-black sh-color">{quoted_content}</div>'
+
+
 def _snippet(text: str) -> str:
     return " ".join(text.split())[:200]
 
@@ -429,12 +564,20 @@ def create_forward(
         if not messages:
             raise RuntimeError(f"Thread has no messages: {thread_id}")
 
-        last = messages[-1]
+        forward_index, forward_message = _find_forward_message(messages)
+        try:
+            rendered_messages = _local.get_messages(thread_id, account)
+            rendered_last = rendered_messages[forward_index] if forward_index < len(rendered_messages) else None
+        except Exception:
+            rendered_last = None
+
+        quoted_content = _build_forward_quoted_content(forward_message, rendered_last)
         did = _draft_id()
         now_ms = int(time.time() * 1000)
         to_list = _normalize_contacts(to)
         cc_list = _normalize_contacts(cc)
         bcc_list = _normalize_contacts(bcc)
+        composed_body = body_html or _text_to_html(body)
 
         draft: dict[str, Any] = {
             "id": did,
@@ -444,19 +587,19 @@ def create_forward(
             "to": to_list,
             "cc": cc_list,
             "bcc": bcc_list,
-            "subject": _forward_subject(str(last.get("subject", ""))),
-            "body": body_html or _text_to_html(body),
+            "subject": _forward_subject(str(forward_message.get("subject", ""))),
+            "body": _inline_quoted_content(composed_body, quoted_content),
             "snippet": _snippet(body),
-            "inReplyTo": str(last.get("id", "")) or None,
-            "inReplyToRfc822Id": last.get("rfc822Id") or None,
+            "inReplyTo": str(forward_message.get("id", "")) or None,
+            "inReplyToRfc822Id": forward_message.get("rfc822Id") or None,
             "labelIds": ["DRAFT"],
             "clientCreatedAt": now_ms,
             "date": _iso_now(),
             "fingerprint": _fingerprint(to_list, cc_list),
             "lastSessionId": str(uuid.uuid4()),
-            "quotedContent": "",
-            "quotedContentInlined": False,
-            "references": [last["rfc822Id"]] if last.get("rfc822Id") else [],
+            "quotedContent": quoted_content,
+            "quotedContentInlined": bool(quoted_content),
+            "references": [forward_message["rfc822Id"]] if forward_message.get("rfc822Id") else [],
             "rfc822Id": _rfc822_id(),
             "schemaVersion": 3,
             "attachments": [],
