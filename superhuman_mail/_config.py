@@ -59,21 +59,22 @@ def accounts() -> list[dict[str, Any]]:
 
 
 def timezone() -> str:
-    """User timezone. Reads from config, falls back to system timezone."""
-    import time as _time
-
+    """User timezone as an IANA name. Reads from config, falls back to system."""
     tz = load().get("superhuman_api", {}).get("timezone")
     if tz:
         return str(tz)
-    # Try tzlocal-style detection via /etc/localtime symlink (macOS/Linux)
+    # Detect from /etc/localtime symlink (macOS/Linux)
     import os
     link = "/etc/localtime"
     if os.path.islink(link):
         target = os.path.realpath(link)
-        # e.g. /var/db/timezone/zoneinfo/Europe/London → Europe/London
         for marker in ("/zoneinfo/", "/zone_info/"):
             idx = target.find(marker)
             if idx != -1:
-                return target[idx + len(marker):]
-    # Last resort
-    return _time.tzname[0] or "UTC"
+                iana = target[idx + len(marker):]
+                # Strip posix/ or right/ prefix if present
+                for prefix in ("posix/", "right/"):
+                    if iana.startswith(prefix):
+                        iana = iana[len(prefix):]
+                return iana
+    return "UTC"
