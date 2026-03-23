@@ -192,11 +192,11 @@ def _write_userdata_message(writes: list[dict[str, Any]], history_id: int | None
         return json.loads(resp.read())
 
 
-def _write_draft(draft: dict[str, Any]) -> dict[str, Any]:
+def _write_draft(draft: dict[str, Any], command: str = "draft.create") -> dict[str, Any]:
     """Persist a draft object and return an envelope result."""
     thread_id = str(draft["threadId"])
     draft_id = str(draft["id"])
-    cmd = f"draft.create"
+    cmd = command
     try:
         history_id = _thread.current_history_id(thread_id)
         result = _write_userdata_message(
@@ -272,9 +272,11 @@ def create_reply(
         }
         if scheduled_for:
             draft["scheduledFor"] = scheduled_for
-        return _write_draft(draft)
+        command = "draft.reply-all" if reply_all else "draft.reply"
+        return _write_draft(draft, command)
     except Exception as e:
-        return fail("draft.create", [classify_exception(e)])
+        command = "draft.reply-all" if reply_all else "draft.reply"
+        return fail(command, [classify_exception(e)])
 
 
 def create_forward(
@@ -331,9 +333,9 @@ def create_forward(
         }
         if scheduled_for:
             draft["scheduledFor"] = scheduled_for
-        return _write_draft(draft)
+        return _write_draft(draft, "draft.forward")
     except Exception as e:
-        return fail("draft.create", [classify_exception(e)])
+        return fail("draft.forward", [classify_exception(e)])
 
 
 def create_compose(
@@ -382,9 +384,9 @@ def create_compose(
         }
         if scheduled_for:
             draft["scheduledFor"] = scheduled_for
-        return _write_draft(draft)
+        return _write_draft(draft, "draft.compose")
     except Exception as e:
-        return fail("draft.create", [classify_exception(e)])
+        return fail("draft.compose", [classify_exception(e)])
 
 
 # ---------------------------------------------------------------------------

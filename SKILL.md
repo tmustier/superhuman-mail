@@ -1,183 +1,220 @@
 ---
 name: superhuman-mail
 description: >
-  Interact with Superhuman email via the `shm` CLI — create drafts (reply, reply-all, forward, compose),
-  post and read comments, upload attachments, share/unshare drafts, read threads, and send email.
-  Use when the user asks to draft an email in Superhuman, reply to a thread, comment on a thread,
-  send via Superhuman, share a draft, or read messages from their Superhuman inbox.
-  Do NOT use for Gmail-only workflows or when the user explicitly wants `gog gmail`.
+  Interact with Superhuman email via the `shm` CLI — search threads, read messages,
+  inspect opens/read receipts, create drafts (reply, reply-all, forward, compose),
+  post/read/discard comments, upload attachments, share/unshare drafts, and send email.
+  Use when the user asks to work inside Superhuman rather than Gmail. Do NOT use when
+  the user explicitly wants `gog gmail` or a Gmail-native workflow.
 ---
 
 # Superhuman Mail
 
-Interact with Superhuman email using the `shm` CLI. This is an unofficial, reverse-engineered API client — not an official Superhuman SDK.
+Use the `shm` CLI to work with Superhuman's private API and local desktop cache.
+
+This is an unofficial, reverse-engineered integration — not an official Superhuman SDK.
 
 ## Prerequisites
 
 `shm` requires:
-1. The **Superhuman desktop app** installed and signed in
-2. Python 3.11+ with the `cryptography` package
+1. Superhuman desktop app installed and signed in
+2. Python 3.11+
+3. `cryptography` available in the environment running `shm`
 
 ## Setup
 
-Run `shm setup` to auto-detect all credentials from the local Superhuman app:
+Bootstrap directly from the local Superhuman app:
 
 ```bash
-shm setup    # extracts email, google_id, device_id, team_id, etc. → writes config.json
-shm doctor   # verify everything works
+shm setup
+shm doctor
 ```
 
-If `shm` is not on PATH, find it in the package directory:
-
-```bash
-# Find the package install location
-pi_pkg_dir=$(find ~/.pi/agent/git -path '*/superhuman-mail' -type d 2>/dev/null | head -1)
-
-# Or check the project-local install
-pi_pkg_dir=$(find .pi/git -path '*/superhuman-mail' -type d 2>/dev/null | head -1)
-
-# Run from the package directory
-cd "$pi_pkg_dir" && ./shm setup && ./shm doctor
-```
-
-If `shm doctor` fails on auth, make sure Superhuman is running and signed in, then re-run `shm setup`.
-
-To use a config file in a different location:
+If the config lives elsewhere:
 
 ```bash
 shm setup --config /path/to/config.json
 export SUPERHUMAN_MAIL_CONFIG=/path/to/config.json
 ```
 
-## Safety rules
+If `shm doctor` fails, make sure Superhuman is running and signed in, then rerun `shm setup`.
 
-1. **Never send without user approval.** Always use `--dry-run` first, show the preview to the user, and only use `--confirm` after explicit approval.
-2. Draft, comment, share, and attachment operations are all **reversible** — safe to run without asking.
-3. Read operations have no side effects.
+## Core safety rule
 
-## Commands
+**Never send without explicit user approval.**
 
-All commands output a consistent JSON envelope:
+Use this workflow every time:
+1. create or inspect the draft
+2. run `shm send --dry-run ...`
+3. show the output to the user
+4. only run `shm send --confirm ...` after explicit approval
+
+Everything else in `shm` is either read-only or reversible.
+
+## Command surface
+
+All commands return the same JSON envelope:
+
 ```json
 {"status": "succeeded", "command": "...", "data": {...}, "errors": [], "warnings": []}
 ```
 
-Use `shm schema` for the full command list, or `shm schema <command>` for details on a specific command.
+Current commands:
 
-### Find threads
-
-If you don't know the thread ID, search or list first:
+### Thread commands
 
 ```bash
-shm thread search "kalgin follow up"               # search local DB
-shm thread search "invoice" --limit 5 --unread      # only unread matches
-shm thread search "sarah" --participants            # include full participant list
-shm thread list --limit 10                          # recent threads
-shm thread list --unread                            # recent unread threads
+shm thread messages <thread_id>
+shm thread userdata <thread_id>
+shm thread list [--limit N] [--unread] [--participants] [--fail-empty] [--account email]
+shm thread search <query> [--limit N] [--unread] [--participants] [--fail-empty] [--account email]
 ```
 
-Use `--fail-empty` to get exit code 3 on zero results (useful for branching).
-
-### Read operations (always safe)
+### Opens / read receipts
 
 ```bash
-shm thread read <thread_id>              # messages from local DB
-shm thread userdata <thread_id>          # drafts/comments/metadata from API
-shm draft read <thread_id>               # drafts on a thread
-shm comment read <thread_id>             # comments on a thread
+shm opens <thread_id> [--recipient email]
+shm opens --recent [--limit N] [--recipient email]
 ```
 
-### Create drafts (reversible)
+Rules:
+- provide **either** `<thread_id>` **or** `--recent`
+- not both
+- `--recipient` works in both modes
+
+### Draft commands
 
 ```bash
-shm draft reply <thread_id> --body "Thanks for the update"
-shm draft reply-all <thread_id> --body "Sounds good"
-shm draft forward <thread_id> --body "FYI — see below"
-shm draft compose --subject "Hello" --body "Hi there" --to someone@example.com
-```
-
-Optional flags: `--body-html`, `--scheduled-for`, `--cc`, `--bcc` (compose only).
-
-### Manage drafts (reversible)
-
-```bash
+shm draft reply <thread_id> --body "..." [--body-html html] [--scheduled-for iso]
+shm draft reply-all <thread_id> --body "..." [--body-html html] [--scheduled-for iso]
+shm draft forward <thread_id> --body "..." [--to email ...] [--cc email ...] [--bcc email ...] [--body-html html] [--scheduled-for iso]
+shm draft compose --subject "..." --body "..." [--to email ...] [--cc email ...] [--bcc email ...] [--body-html html] [--scheduled-for iso]
+shm draft read <thread_id> [--draft-id id]
 shm draft discard <thread_id> <draft_id>
-shm draft attach <thread_id> <draft_id> ./file.pdf --content-type application/pdf
+shm draft attach <thread_id> <draft_id> <file> [--content-type mime]
+shm draft share <thread_id> <draft_id> [--name name]
+shm draft unshare <thread_id> <draft_id>
 ```
 
-### Comments (reversible)
+### Comment commands
 
 ```bash
-shm comment post <thread_id> --body "Please review this"
-shm comment post <thread_id> --body "Hey @Dan" --mention dan@example.com "Dan Smith"
+shm comment post <thread_id> --body "..." [--mention EMAIL NAME]
+shm comment read <thread_id>
 shm comment discard <thread_id> <comment_id>
 ```
 
-### Send (IRREVERSIBLE — requires user approval)
+### Send / misc
 
 ```bash
-# Step 1: validate (show to user)
 shm send --dry-run <thread_id> <draft_id>
+shm send --confirm <thread_id> <draft_id>
+shm setup [--config path]
+shm doctor
+shm schema [command]
+```
 
-# Step 2: only after user says "send it"
+## Recommended workflow patterns
+
+### 1. Reply to an email in Superhuman
+
+If you do not know the thread ID yet:
+
+```bash
+shm thread search "customer name topic"
+```
+
+Then:
+
+```bash
+shm thread messages <thread_id>
+shm draft reply <thread_id> --body "..."
+shm send --dry-run <thread_id> <draft_id>
+```
+
+After the user explicitly approves:
+
+```bash
 shm send --confirm <thread_id> <draft_id>
 ```
 
-Running `shm send` without `--dry-run` or `--confirm` is rejected by the CLI.
+### 2. Get read receipts / recent opens
 
-### Share / unshare (reversible)
+Per thread:
 
 ```bash
-shm share <thread_id> <draft_id>         # returns a collaboration link
-shm unshare <thread_id> <draft_id>
+shm opens <thread_id>
+shm opens <thread_id> --recipient someone@example.com
 ```
 
-### Diagnostics
+Across threads:
 
 ```bash
-shm doctor                               # verify config, auth, connectivity
-shm schema                               # list all commands with safety tiers
-shm schema send                          # describe a specific command
+shm opens --recent --limit 10
+shm opens --recent --recipient someone@example.com
 ```
 
-## Workflow patterns
-
-### Reply to a thread
-
-1. `shm thread search "topic"` — find the thread (if you don't have the ID)
-2. `shm thread read <thread_id>` — understand the conversation
-2. `shm draft reply <thread_id> --body "..."` — create draft
-3. `shm send --dry-run <thread_id> <draft_id>` — show preview to user
-4. After user approves: `shm send --confirm <thread_id> <draft_id>`
-
-### Draft for team review
-
-1. `shm draft reply <thread_id> --body "..."` — create draft
-2. `shm share <thread_id> <draft_id>` — get collaboration link
-3. Share the link with the user/team
-
-### Comment on a thread
-
-1. `shm comment post <thread_id> --body "..."` — post comment
-2. No approval needed — comments are visible only to the Superhuman team
-
-## Error recovery
-
-If a command fails, check the `errors` array in the response:
-
-- `"class": "auth"` → run `shm doctor`, restart Superhuman app if needed
-- `"class": "network"` → check internet, retry if `"retryable": true`
-- `"class": "not-found"` → verify the thread_id/draft_id exists
-- `"class": "input"` → check command arguments
-
-## Finding thread IDs
-
-Use `shm thread search` or `shm thread list` to find thread IDs. The user can also find them in the Superhuman URL bar.
+### 3. Share a draft for team review
 
 ```bash
-# User says "reply to the email from Rob about the demo"
-shm thread search "rob demo"
-# → pick the matching thread_id from results
-shm thread read <thread_id>
 shm draft reply <thread_id> --body "..."
+shm draft share <thread_id> <draft_id>
+```
+
+Use `draft unshare` to revoke it later.
+
+### 4. Read raw thread metadata only when needed
+
+Prefer the specialized commands first:
+- `thread messages`
+- `draft read`
+- `comment read`
+- `opens`
+
+Use raw thread userdata only for advanced/debug cases:
+
+```bash
+shm thread userdata <thread_id>
+```
+
+## How to choose between Gmail and Superhuman
+
+Use `shm` when the user wants Superhuman-specific behavior such as:
+- working from their Superhuman cache
+- read receipts / Recent Opens
+- draft share / unshare
+- comments on Superhuman threads
+- reverse-engineered Superhuman workflows
+
+Do **not** use `shm` when the user explicitly wants Gmail, `gog gmail`, or a Google-native workflow.
+
+## Error handling hints
+
+If a command fails:
+- `auth` → run `shm doctor`, restart Superhuman if needed
+- `network` → retry if `retryable: true`
+- `input` → check thread id / draft id / flags
+- `not-found` → search/list first to confirm IDs
+
+## Quick examples
+
+```bash
+# Find a thread
+shm thread search "kalgin follow up"
+
+# Read it
+shm thread messages 19c76b5e86217b7b
+
+# Check opens
+shm opens 19c76b5e86217b7b
+shm opens --recent --limit 5
+
+# Draft + share
+shm draft reply 19c76b5e86217b7b --body "Thanks — following up here."
+shm draft share 19c76b5e86217b7b draft00abc123
+
+# Safe send flow
+shm send --dry-run 19c76b5e86217b7b draft00abc123
+# ... wait for explicit approval ...
+shm send --confirm 19c76b5e86217b7b draft00abc123
 ```
