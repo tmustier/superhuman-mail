@@ -247,6 +247,39 @@ Validated readback behavior:
   - `accessRole`
   - `name`
 
+### Unsharing drafts
+
+- `POST https://mail.superhuman.com/~backend/v3/drafts.unshare`
+  - to unshare a previously shared draft
+
+Validated request body:
+
+```json
+{
+  "path": "users/<googleId>/threads/<threadId>/messages/<draftId>"
+}
+```
+
+Validated behavior:
+
+- the `sharing` object on the message userdata gains an `unsharedAt` timestamp
+- the share link becomes inactive
+- the draft itself is preserved (not discarded)
+
+### UI vs API draft parity
+
+On 2026-03-23 we captured a UI-created reply draft from the Superhuman Electron app (via CDP) and compared it against our API-created reply drafts.
+
+Key findings:
+
+- **Structurally identical**: same 22 fields on both, same `schemaVersion: 3`
+- **`from` quoting**: UI writes `Name <email>`, our backend write uses `"Name" <email>` (both accepted)
+- **`quotedContent`**: UI populates this with `gmail_quote`-formatted HTML of the replied-to message; our API drafts leave it empty
+- **`unread`**: UI sets `false` on the draft; our API drafts also set `false` (via the backend default)
+- **`lastSessionId`**: our API drafts include this; UI drafts do not persist it to the backend (likely held in-memory)
+
+Observation: Superhuman does **not** persist draft body text to the backend on every keystroke. The compose body lives in the editor DOM and is only written to `userdata.writeMessage` on a save event (e.g. navigating away from the thread, sending, or an auto-save timer). Typing in the compose UI and immediately reading `userdata.read` returns an empty `body`.
+
 ## Endpoint inventory observed in the current Superhuman bundle
 
 Observed in `7b67e9e565506c551126.page.js`.
