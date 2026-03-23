@@ -17,6 +17,8 @@
     "device_id": "native-00000000-0000-0000-0000-000000000000",
     "team_id": "team_000000000000000000",
     "team_shard_key": "0000",
-    "version": "2026-01-01T00:00:00Z"
+    "version": "2026-01-01T00:00:00Z",
+    "timezone": "America/New_York",
+    "timezone_help": "IANA timezone name. If omitted, auto-detected from system."
   }
 }

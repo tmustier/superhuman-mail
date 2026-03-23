@@ -268,7 +268,7 @@ def create_reply(
             "schemaVersion": 3,
             "attachments": [],
             "totalComposeSeconds": 0,
-            "timeZone": "Europe/London",
+            "timeZone": _config.timezone(),
         }
         if scheduled_for:
             draft["scheduledFor"] = scheduled_for
@@ -281,6 +281,9 @@ def create_forward(
     thread_id: str,
     body: str,
     *,
+    to: list[Any] | None = None,
+    cc: list[Any] | None = None,
+    bcc: list[Any] | None = None,
     body_html: str | None = None,
     scheduled_for: str | None = None,
     account: str | None = None,
@@ -295,15 +298,18 @@ def create_forward(
         last = messages[-1]
         did = _draft_id()
         now_ms = int(time.time() * 1000)
+        to_list = _normalize_contacts(to)
+        cc_list = _normalize_contacts(cc)
+        bcc_list = _normalize_contacts(bcc)
 
         draft: dict[str, Any] = {
             "id": did,
             "threadId": thread_id,
             "action": "forward",
             "from": _default_from(),
-            "to": [],
-            "cc": [],
-            "bcc": [],
+            "to": to_list,
+            "cc": cc_list,
+            "bcc": bcc_list,
             "subject": _forward_subject(str(last.get("subject", ""))),
             "body": body_html or _text_to_html(body),
             "snippet": _snippet(body),
@@ -312,7 +318,7 @@ def create_forward(
             "labelIds": ["DRAFT"],
             "clientCreatedAt": now_ms,
             "date": _iso_now(),
-            "fingerprint": {"to": "", "cc": "", "attachments": ""},
+            "fingerprint": _fingerprint(to_list, cc_list),
             "lastSessionId": str(uuid.uuid4()),
             "quotedContent": "",
             "quotedContentInlined": False,
@@ -321,7 +327,7 @@ def create_forward(
             "schemaVersion": 3,
             "attachments": [],
             "totalComposeSeconds": 0,
-            "timeZone": "Europe/London",
+            "timeZone": _config.timezone(),
         }
         if scheduled_for:
             draft["scheduledFor"] = scheduled_for
@@ -372,7 +378,7 @@ def create_compose(
             "schemaVersion": 3,
             "attachments": [],
             "totalComposeSeconds": 0,
-            "timeZone": "Europe/London",
+            "timeZone": _config.timezone(),
         }
         if scheduled_for:
             draft["scheduledFor"] = scheduled_for

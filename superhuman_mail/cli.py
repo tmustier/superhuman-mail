@@ -90,11 +90,14 @@ SCHEMA: dict[str, dict[str, Any]] = {
         "args": {
             "thread_id": {"required": True, "type": "string"},
             "--body": {"required": True, "type": "string"},
+            "--to": {"required": False, "type": "string[]", "hint": "Repeatable"},
+            "--cc": {"required": False, "type": "string[]"},
+            "--bcc": {"required": False, "type": "string[]"},
             "--body-html": {"required": False, "type": "string"},
             "--scheduled-for": {"required": False, "type": "string"},
         },
         "safety": "write",
-        "example": "shm draft forward 19d001f35612a211 --body 'FYI — see below'",
+        "example": "shm draft forward 19d001f35612a211 --body 'FYI' --to someone@example.com",
     },
     "draft.compose": {
         "description": "Create a new compose draft (new thread)",
@@ -322,6 +325,9 @@ def _build_parser() -> argparse.ArgumentParser:
     d_fwd = dsub.add_parser("forward", help="Create forward draft")
     d_fwd.add_argument("thread_id")
     d_fwd.add_argument("--body", required=True)
+    d_fwd.add_argument("--to", action="append", default=[])
+    d_fwd.add_argument("--cc", action="append", default=[])
+    d_fwd.add_argument("--bcc", action="append", default=[])
     d_fwd.add_argument("--body-html")
     d_fwd.add_argument("--scheduled-for")
 
@@ -441,7 +447,7 @@ def main(argv: list[str] | None = None) -> int:
         elif args.action == "reply-all":
             emit(_draft.create_reply(args.thread_id, args.body, reply_all=True, body_html=args.body_html, scheduled_for=args.scheduled_for))
         elif args.action == "forward":
-            emit(_draft.create_forward(args.thread_id, args.body, body_html=args.body_html, scheduled_for=args.scheduled_for))
+            emit(_draft.create_forward(args.thread_id, args.body, to=args.to, cc=args.cc, bcc=args.bcc, body_html=args.body_html, scheduled_for=args.scheduled_for))
         elif args.action == "compose":
             emit(_draft.create_compose(args.subject, args.body, to=args.to, cc=args.cc, bcc=args.bcc, body_html=args.body_html, scheduled_for=args.scheduled_for))
         elif args.action == "read":
