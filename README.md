@@ -33,33 +33,37 @@ cd superhuman-mail
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e .         # installs `shm` on PATH
-cp config.example.json config.json
-# Fill in config.json with your local values (see below)
+shm setup                # auto-detects credentials from local Superhuman app
+shm doctor               # verify everything works
 ```
+
+That's it. `shm setup` reads all credentials directly from the Superhuman desktop app — no manual config needed.
 
 To point `shm` at a config file in a different location:
 
 ```bash
+shm setup --config /path/to/config.json
 export SUPERHUMAN_MAIL_CONFIG=/path/to/config.json
-```
-
-Verify everything works:
-
-```bash
-shm doctor
 ```
 
 ## Config
 
-Copy `config.example.json` to `config.json` and fill in your values. The config is gitignored.
+`shm setup` generates `config.json` automatically by reading the local Superhuman desktop app's data. The only prerequisite is that **Superhuman is installed and signed in**.
 
-You need:
-- The Superhuman desktop app installed and signed in
-- Your Google account ID (from Superhuman DevTools → Cookies)
-- Your device ID (from Superhuman DevTools → Network headers)
-- Your team ID and shard key (from team settings)
+What it extracts:
 
-See the `_help` fields in `config.example.json` for where to find each value.
+| Field | Source |
+|---|---|
+| `email` | Superhuman `config.json` → active tab paths |
+| `author_name` | Google userinfo API (via Superhuman access token) |
+| `google_id` | Cookie DB → numeric cookie name on `accounts.superhuman.com` |
+| `device_id` | Superhuman `config.json` → `deviceId` |
+| `team_id` | Local Storage LevelDB → `team_*` pattern |
+| `team_shard_key` | Derived from `team_id` |
+| `version` | Local Storage LevelDB → `lastCodeVersion` |
+| `db_file` | First valid SQLite in `File System/000/t/00/` |
+
+If you need to regenerate after a Superhuman update or account change, just run `shm setup` again.
 
 ## CLI (`shm`)
 
@@ -74,12 +78,15 @@ Every command outputs a consistent JSON envelope:
 | Tier | Operations | Risk |
 |---|---|---|
 | **read** | `thread read`, `thread userdata`, `draft read`, `comment read`, `doctor`, `schema` | None |
-| **write** | `draft reply/reply-all/forward/compose/discard/attach`, `comment post/discard`, `share/unshare` | Reversible |
+| **write** | `setup`, `draft reply/reply-all/forward/compose/discard/attach`, `comment post/discard`, `share/unshare` | Reversible |
 | **irreversible** | `send` | Requires `--dry-run` or `--confirm` |
 
 ### Commands
 
 ```bash
+# Setup (run once — auto-detects everything from local Superhuman app)
+shm setup
+
 # Read thread messages from local DB
 shm thread read <thread_id>
 
@@ -185,6 +192,7 @@ superhuman_mail/
   draft.py                    # draft CRUD + attachments
   comment.py                  # comment CRUD
   send.py                     # send + validate
+  setup.py                    # auto-bootstrap config from local app
   share.py                    # share / unshare
   client.py                   # Client class
   cli.py                      # CLI implementation

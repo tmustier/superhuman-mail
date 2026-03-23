@@ -18,6 +18,7 @@ from . import _auth, _config, _local
 from . import comment as _comment
 from . import draft as _draft
 from . import send as _send
+from . import setup as _setup
 from . import share as _share
 from . import thread as _thread
 from ._envelope import emit, error, fail, ok
@@ -170,6 +171,14 @@ SCHEMA: dict[str, dict[str, Any]] = {
         },
         "safety": "write",
         "example": "shm unshare 19d001f35612a211 draft00abc123",
+    },
+    "setup": {
+        "description": "Auto-detect credentials from local Superhuman app and write config.json",
+        "args": {
+            "--config": {"required": False, "type": "filepath", "hint": "Output path (default: config.json in repo root)"},
+        },
+        "safety": "write",
+        "example": "shm setup",
     },
     "doctor": {
         "description": "Verify config, auth, and connectivity",
@@ -336,6 +345,10 @@ def _build_parser() -> argparse.ArgumentParser:
     unshare_p.add_argument("thread_id")
     unshare_p.add_argument("draft_id")
 
+    # -- setup --
+    setup_p = sub.add_parser("setup", help="Auto-detect credentials from local Superhuman app")
+    setup_p.add_argument("--config", help="Output path for config.json")
+
     # -- doctor --
     sub.add_parser("doctor", help="Verify config, auth, and connectivity")
 
@@ -411,6 +424,16 @@ def main(argv: list[str] | None = None) -> int:
         emit(_share.share(args.thread_id, args.draft_id, name=args.name))
     elif args.command == "unshare":
         emit(_share.unshare(args.thread_id, args.draft_id))
+
+    # -- setup --
+    elif args.command == "setup":
+        try:
+            from pathlib import Path
+            config_path = Path(args.config) if args.config else None
+            result = _setup.run_setup(config_path=config_path)
+            emit(ok("setup", result))
+        except Exception as e:
+            emit(fail("setup", [error("input", "SETUP_FAILED", False, str(e))]))
 
     # -- doctor --
     elif args.command == "doctor":

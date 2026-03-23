@@ -26,7 +26,7 @@ def load() -> dict[str, Any]:
     if not path.exists():
         raise FileNotFoundError(
             f"Config not found: {path}. "
-            f"Copy config.example.json to config.json and fill in your values."
+            f"Run `shm setup` to auto-generate config.json from your local Superhuman app."
         )
     _cache = json.loads(path.read_text())
     return _cache

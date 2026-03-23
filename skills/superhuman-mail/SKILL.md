@@ -16,15 +16,15 @@ Interact with Superhuman email using the `shm` CLI. This is an unofficial, rever
 
 `shm` requires:
 1. The **Superhuman desktop app** installed and signed in
-2. A **config.json** with auth values extracted from the app (see setup below)
-3. Python 3.11+ with the `cryptography` package
+2. Python 3.11+ with the `cryptography` package
 
-## Setup check
+## Setup
 
-Before using any commands, verify the CLI is working:
+Run `shm setup` to auto-detect all credentials from the local Superhuman app:
 
 ```bash
-shm doctor
+shm setup    # extracts email, google_id, device_id, team_id, etc. → writes config.json
+shm doctor   # verify everything works
 ```
 
 If `shm` is not on PATH, find it in the package directory:
@@ -37,16 +37,15 @@ pi_pkg_dir=$(find ~/.pi/agent/git -path '*/superhuman-mail' -type d 2>/dev/null 
 pi_pkg_dir=$(find .pi/git -path '*/superhuman-mail' -type d 2>/dev/null | head -1)
 
 # Run from the package directory
-cd "$pi_pkg_dir" && ./shm doctor
+cd "$pi_pkg_dir" && ./shm setup && ./shm doctor
 ```
 
-If `shm doctor` fails on the `config` check, the user needs to create `config.json` — this requires manual setup because the values come from Superhuman DevTools. Tell the user:
+If `shm doctor` fails on auth, make sure Superhuman is running and signed in, then re-run `shm setup`.
 
-> To set up superhuman-mail, copy `config.example.json` to `config.json` in the superhuman-mail directory and fill in the values. You need your Google account ID (from Superhuman DevTools → Cookies) and device ID (from Network headers). See the `_help` fields in the example config.
-
-Alternatively, point to an existing config file:
+To use a config file in a different location:
 
 ```bash
+shm setup --config /path/to/config.json
 export SUPERHUMAN_MAIL_CONFIG=/path/to/config.json
 ```
 
