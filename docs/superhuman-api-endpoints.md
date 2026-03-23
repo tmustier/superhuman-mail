@@ -449,7 +449,7 @@ Observed in `7b67e9e565506c551126.page.js`.
 - `~backend/v3/drafts.unshare`
 
 These are about sharing an existing draft, not creating one from scratch.
-`drafts.share` is now live-validated; `drafts.unshare` is still unvalidated.
+Both `drafts.share` and `drafts.unshare` are now live-validated.
 
 ### Sending a draft
 
@@ -487,7 +487,7 @@ These are about sharing an existing draft, not creating one from scratch.
 
 - exact minimal payload for every draft variant
 - canonical forward quoted-content generation from live rendered message HTML
-- `drafts.unshare` semantics in live team workflows
+- team-collaboration edge cases beyond the basic validated `drafts.unshare` flow
 - smart-send-specific fields beyond plain `scheduledFor`
 - advanced send cases: reminders, mail merge, sensitivity labels, smart send internals
 - whether there is a hidden create-only endpoint not present in the current bundle
@@ -496,10 +496,10 @@ These are about sharing an existing draft, not creating one from scratch.
 
 If we want to extend support further, the next clean experiment is:
 
-1. validate `drafts.unshare` on the currently shared sacrificial draft
-2. capture a real UI-created draft object via `userdata.read`
-3. diff it before/after editing the same draft manually in Superhuman
-4. compare the UI-created forward draft against our minimal forward payload
+1. capture a real UI-created draft object via `userdata.read`
+2. diff it before/after editing the same draft manually in Superhuman
+3. compare the UI-created forward draft against our minimal forward payload
+4. validate more team-collaboration edge cases beyond the basic `drafts.unshare` flow
 5. convert these validations into replayable integration tests
 
 That would move us from “validated draft persistence primitives” to “full client behavior parity”.

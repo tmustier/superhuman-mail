@@ -9,17 +9,22 @@ from . import _auth, _config, _local
 from ._envelope import classify_exception, fail, ok
 
 
-def read(thread_id: str, account: str | None = None) -> dict[str, Any]:
+def messages(thread_id: str, account: str | None = None) -> dict[str, Any]:
     """Read thread messages from the local Superhuman DB."""
     try:
-        messages = _local.get_messages(thread_id, account)
-        return ok("thread.read", {
+        rows = _local.get_messages(thread_id, account)
+        return ok("thread.messages", {
             "thread_id": thread_id,
-            "message_count": len(messages),
-            "messages": messages,
+            "message_count": len(rows),
+            "messages": rows,
         })
     except Exception as e:
-        return fail("thread.read", [classify_exception(e)])
+        return fail("thread.messages", [classify_exception(e)])
+
+
+def read(thread_id: str, account: str | None = None) -> dict[str, Any]:
+    """Backward-compatible alias for messages()."""
+    return messages(thread_id, account)
 
 
 def userdata(thread_id: str) -> dict[str, Any]:

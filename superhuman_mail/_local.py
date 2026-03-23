@@ -473,3 +473,87 @@ def search_threads(
         return results
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Recent opens (activity_feed)
+# ---------------------------------------------------------------------------
+
+
+def recent_opens(
+    *,
+    limit: int = 20,
+    recipient: str | None = None,
+    account: str | None = None,
+) -> list[dict[str, Any]]:
+    """Read recent opens from the local activity_feed table."""
+    conn = _connection(account)
+    try:
+        sql = """
+            SELECT a.email, a.thread_id, a.message_id, a.updated_at, t.json, t.superhuman_data
+            FROM activity_feed a
+            JOIN threads t ON t.thread_id = a.thread_id
+        """
+        params: list[Any] = []
+        if recipient:
+            sql += " WHERE lower(a.email) = lower(?)"
+            params.append(recipient)
+        sql += " ORDER BY a.updated_at DESC LIMIT ?"
+        params.append(limit)
+        rows = conn.execute(sql, tuple(params)).fetchall()
+
+        events: list[dict[str, Any]] = []
+        for row in rows:
+            email = str(row[0])
+            thread_id = str(row[1])
+            message_id = str(row[2])
+            updated_at_raw = row[3]
+            raw = json.loads(row[4]) if row[4] else {}
+            superhuman_data = json.loads(row[5]) if row[5] else {}
+
+            messages = list(raw.get("messages", []) or [])
+            message = next((m for m in messages if str(m.get("id", "")) == message_id), None)
+            if message is None:
+                message = messages[-1] if messages else {}
+            from_info = message.get("from") or {}
+            subject = str(message.get("subject", ""))
+            if not subject and messages:
+                subject = str(messages[0].get("subject", ""))
+            snippet = _clean_snippet(str(message.get("snippet", "")))
+
+            device = None
+            try:
+                read_events = (
+                    superhuman_data.get("messages", {})
+                    .get(message_id, {})
+                    .get("reads", {})
+                    .get(email, [])
+                )
+                if read_events:
+                    device = read_events[-1].get("device")
+            except Exception:
+                device = None
+
+            if isinstance(updated_at_raw, (int, float)):
+                opened_at = datetime.fromtimestamp(updated_at_raw / 1000).isoformat()
+            elif updated_at_raw is None:
+                opened_at = None
+            else:
+                opened_at = str(updated_at_raw)
+
+            events.append({
+                "recipient": email,
+                "thread_id": thread_id,
+                "message_id": message_id,
+                "opened_at": opened_at,
+                "subject": subject,
+                "from": {
+                    "email": str(from_info.get("email", "")),
+                    "name": str(from_info.get("name", from_info.get("raw", ""))),
+                },
+                "snippet": snippet,
+                "device": device,
+            })
+        return events
+    finally:
+        conn.close()

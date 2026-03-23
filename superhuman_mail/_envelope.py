@@ -75,8 +75,8 @@ def classify_exception(e: Exception) -> dict[str, Any]:
     return error("network", "UNKNOWN", False, f"{type(e).__name__}: {e}")
 
 
-def emit(result: dict[str, Any]) -> None:
+def emit(result: dict[str, Any], *, exit_code: int | None = None) -> None:
     """Print result as JSON and exit with appropriate code."""
     json.dump(result, sys.stdout, indent=2, default=str)
     sys.stdout.write("\n")
-    sys.exit(0 if result["status"] == "succeeded" else 1)
+    sys.exit(exit_code if exit_code is not None else (0 if result["status"] == "succeeded" else 1))

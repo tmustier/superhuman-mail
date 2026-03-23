@@ -1,7 +1,9 @@
 """CLI entry point for shm — Superhuman Mail agent-friendly CLI.
 
 Usage:
-    shm thread read <thread_id>
+    shm thread messages <thread_id>
+    shm opens <thread_id>
+    shm opens --recent
     shm draft reply <thread_id> --body "..."
     shm send --dry-run <thread_id> <draft_id>
     shm doctor
@@ -17,6 +19,7 @@ from typing import Any
 from . import _auth, _config, _local
 from . import comment as _comment
 from . import draft as _draft
+from . import opens as _opens
 from . import send as _send
 from . import setup as _setup
 from . import share as _share
@@ -28,14 +31,14 @@ from ._envelope import emit, error, fail, ok
 # ---------------------------------------------------------------------------
 
 SCHEMA: dict[str, dict[str, Any]] = {
-    "thread.read": {
+    "thread.messages": {
         "description": "Read thread messages from local Superhuman DB",
         "args": {"thread_id": {"required": True, "type": "string"}},
         "safety": "read",
-        "example": "shm thread read 19d001f35612a211",
+        "example": "shm thread messages 19d001f35612a211",
     },
     "thread.userdata": {
-        "description": "Read thread userdata (drafts, comments, metadata) from API",
+        "description": "Advanced: raw thread userdata dump. Prefer draft read, comment read, or opens for specific data.",
         "args": {"thread_id": {"required": True, "type": "string"}},
         "safety": "read",
         "example": "shm thread userdata 19d001f35612a211",
@@ -47,6 +50,7 @@ SCHEMA: dict[str, dict[str, Any]] = {
             "--unread": {"required": False, "type": "flag"},
             "--participants": {"required": False, "type": "flag", "hint": "Include full participant list"},
             "--fail-empty": {"required": False, "type": "flag", "hint": "Exit code 3 if no results"},
+            "--account": {"required": False, "type": "string", "hint": "Email account to use (multi-account)"},
         },
         "safety": "read",
         "example": "shm thread list --limit 10",
@@ -59,9 +63,31 @@ SCHEMA: dict[str, dict[str, Any]] = {
             "--unread": {"required": False, "type": "flag"},
             "--participants": {"required": False, "type": "flag", "hint": "Include full participant list"},
             "--fail-empty": {"required": False, "type": "flag", "hint": "Exit code 3 if no results"},
+            "--account": {"required": False, "type": "string", "hint": "Email account to use (multi-account)"},
         },
         "safety": "read",
         "example": "shm thread search \"kalgin follow up\"",
+    },
+    "opens": {
+        "description": "Read per-message read statuses / read receipts from API",
+        "args": {
+            "thread_id": {"required": False, "type": "string"},
+            "--recent": {"required": False, "type": "flag", "hint": "Show recent opens across threads"},
+            "--recipient": {"required": False, "type": "string", "hint": "Filter to a specific recipient email"},
+            "--limit": {"required": False, "type": "int", "default": 20, "hint": "Max results for --recent mode"},
+        },
+        "safety": "read",
+        "example": "shm opens 19d001f35612a211",
+    },
+    "opens.recent": {
+        "description": "Read recent opens across threads from the local activity_feed table",
+        "args": {
+            "--recent": {"required": True, "type": "flag"},
+            "--recipient": {"required": False, "type": "string", "hint": "Filter to a specific recipient email"},
+            "--limit": {"required": False, "type": "int", "default": 20},
+        },
+        "safety": "read",
+        "example": "shm opens --recent --limit 10",
     },
     "draft.reply": {
         "description": "Create a reply draft on an existing thread",
@@ -97,7 +123,7 @@ SCHEMA: dict[str, dict[str, Any]] = {
             "--scheduled-for": {"required": False, "type": "string"},
         },
         "safety": "write",
-        "example": "shm draft forward 19d001f35612a211 --body 'FYI' --to someone@example.com",
+        "example": "shm draft forward 19d001f35612a211 --body 'FYI — see below' --to someone@example.com",
     },
     "draft.compose": {
         "description": "Create a new compose draft (new thread)",
@@ -142,6 +168,25 @@ SCHEMA: dict[str, dict[str, Any]] = {
         "safety": "write",
         "example": "shm draft attach 19d001f35612a211 draft00abc123 ./report.pdf",
     },
+    "draft.share": {
+        "description": "Share a draft with a collaboration link",
+        "args": {
+            "thread_id": {"required": True, "type": "string"},
+            "draft_id": {"required": True, "type": "string"},
+            "--name": {"required": False, "type": "string"},
+        },
+        "safety": "write",
+        "example": "shm draft share 19d001f35612a211 draft00abc123",
+    },
+    "draft.unshare": {
+        "description": "Remove sharing from a draft",
+        "args": {
+            "thread_id": {"required": True, "type": "string"},
+            "draft_id": {"required": True, "type": "string"},
+        },
+        "safety": "write",
+        "example": "shm draft unshare 19d001f35612a211 draft00abc123",
+    },
     "comment.post": {
         "description": "Post a comment on a thread",
         "args": {
@@ -179,25 +224,6 @@ SCHEMA: dict[str, dict[str, Any]] = {
         "safety": "irreversible",
         "example": "shm send --dry-run 19d001f35612a211 draft00abc123",
     },
-    "share": {
-        "description": "Share a draft with a collaboration link",
-        "args": {
-            "thread_id": {"required": True, "type": "string"},
-            "draft_id": {"required": True, "type": "string"},
-            "--name": {"required": False, "type": "string"},
-        },
-        "safety": "write",
-        "example": "shm share 19d001f35612a211 draft00abc123",
-    },
-    "unshare": {
-        "description": "Remove sharing from a draft",
-        "args": {
-            "thread_id": {"required": True, "type": "string"},
-            "draft_id": {"required": True, "type": "string"},
-        },
-        "safety": "write",
-        "example": "shm unshare 19d001f35612a211 draft00abc123",
-    },
     "setup": {
         "description": "Auto-detect credentials from local Superhuman app and write config.json",
         "args": {
@@ -230,7 +256,7 @@ def _doctor() -> dict[str, Any]:
 
     # 1. Config
     try:
-        cfg = _config.load()
+        _config.load()
         checks.append({"name": "config", "status": "pass", "detail": f"Loaded from {_config._find_config()}"})
     except Exception as e:
         checks.append({"name": "config", "status": "fail", "detail": str(e)})
@@ -286,9 +312,9 @@ def _build_parser() -> argparse.ArgumentParser:
     # -- thread --
     thread_p = sub.add_parser("thread", help="Thread operations")
     tsub = thread_p.add_subparsers(dest="action")
-    t_read = tsub.add_parser("read", help="Read messages from local DB")
-    t_read.add_argument("thread_id")
-    t_ud = tsub.add_parser("userdata", help="Read userdata from API")
+    t_messages = tsub.add_parser("messages", help="Read messages from local DB")
+    t_messages.add_argument("thread_id")
+    t_ud = tsub.add_parser("userdata", help="Read userdata from API (advanced)")
     t_ud.add_argument("thread_id")
 
     t_list = tsub.add_parser("list", help="List recent threads")
@@ -305,6 +331,13 @@ def _build_parser() -> argparse.ArgumentParser:
     t_search.add_argument("--participants", action="store_true", help="Include full participant list")
     t_search.add_argument("--fail-empty", action="store_true", help="Exit code 3 if no results")
     t_search.add_argument("--account")
+
+    # -- opens --
+    opens_p = sub.add_parser("opens", help="Read read receipts / opens for a thread or recent activity")
+    opens_p.add_argument("thread_id", nargs="?", default=None)
+    opens_p.add_argument("--recent", action="store_true", help="Show recent opens across threads")
+    opens_p.add_argument("--recipient", help="Filter to a specific recipient email")
+    opens_p.add_argument("--limit", type=int, default=20, help="Max results for --recent mode")
 
     # -- draft --
     draft_p = sub.add_parser("draft", help="Draft operations")
@@ -354,6 +387,15 @@ def _build_parser() -> argparse.ArgumentParser:
     d_attach.add_argument("file")
     d_attach.add_argument("--content-type", default="application/octet-stream")
 
+    d_share = dsub.add_parser("share", help="Share a draft")
+    d_share.add_argument("thread_id")
+    d_share.add_argument("draft_id")
+    d_share.add_argument("--name")
+
+    d_unshare = dsub.add_parser("unshare", help="Unshare a draft")
+    d_unshare.add_argument("thread_id")
+    d_unshare.add_argument("draft_id")
+
     # -- comment --
     comment_p = sub.add_parser("comment", help="Comment operations")
     csub = comment_p.add_subparsers(dest="action")
@@ -378,16 +420,6 @@ def _build_parser() -> argparse.ArgumentParser:
     send_g.add_argument("--dry-run", action="store_true", help="Validate without sending")
     send_g.add_argument("--confirm", action="store_true", help="Actually send (irreversible)")
     send_p.add_argument("--delay", type=int, default=20)
-
-    # -- share / unshare --
-    share_p = sub.add_parser("share", help="Share a draft")
-    share_p.add_argument("thread_id")
-    share_p.add_argument("draft_id")
-    share_p.add_argument("--name")
-
-    unshare_p = sub.add_parser("unshare", help="Unshare a draft")
-    unshare_p.add_argument("thread_id")
-    unshare_p.add_argument("draft_id")
 
     # -- setup --
     setup_p = sub.add_parser("setup", help="Auto-detect credentials from local Superhuman app")
@@ -419,29 +451,37 @@ def main(argv: list[str] | None = None) -> int:
     # -- thread --
     if args.command == "thread":
         if not hasattr(args, "action") or not args.action:
-            emit(fail("thread", [error("input", "MISSING_ACTION", False, "Use: shm thread read|userdata|list|search")]))
-        elif args.action == "read":
-            emit(_thread.read(args.thread_id))
+            emit(fail("thread", [error("input", "MISSING_ACTION", False, "Use: shm thread messages|userdata|list|search")]))
+        elif args.action == "messages":
+            emit(_thread.messages(args.thread_id))
         elif args.action == "userdata":
             emit(_thread.userdata(args.thread_id))
         elif args.action == "list":
             result = _thread.list_threads(limit=args.limit, unread=args.unread, include_participants=args.participants, account=args.account)
             if args.fail_empty and result["status"] == "succeeded" and result["data"]["returned"] == 0:
-                emit(result)  # emit still prints, but we override exit code
-                sys.exit(3)
+                emit(result, exit_code=3)
             emit(result)
         elif args.action == "search":
             result = _thread.search(args.query, limit=args.limit, unread=args.unread, include_participants=args.participants, account=args.account)
             if args.fail_empty and result["status"] == "succeeded" and result["data"]["returned"] == 0:
-                json.dump(result, sys.stdout, indent=2, default=str)
-                sys.stdout.write("\n")
-                sys.exit(3)
+                emit(result, exit_code=3)
             emit(result)
+
+    # -- opens --
+    elif args.command == "opens":
+        if args.thread_id and args.recent:
+            emit(fail("opens", [error("input", "CONFLICT", False, "Use either a thread_id or --recent, not both")]))
+        elif args.recent:
+            emit(_opens.recent(limit=args.limit, recipient=args.recipient))
+        elif args.thread_id:
+            emit(_opens.per_thread(args.thread_id, recipient=args.recipient))
+        else:
+            emit(fail("opens", [error("input", "MISSING_ARG", False, "Provide a thread_id or use --recent")]))
 
     # -- draft --
     elif args.command == "draft":
         if not hasattr(args, "action") or not args.action:
-            emit(fail("draft", [error("input", "MISSING_ACTION", False, "Use: shm draft reply|reply-all|forward|compose|read|discard|attach")]))
+            emit(fail("draft", [error("input", "MISSING_ACTION", False, "Use: shm draft reply|reply-all|forward|compose|read|discard|attach|share|unshare")]))
         elif args.action == "reply":
             emit(_draft.create_reply(args.thread_id, args.body, body_html=args.body_html, scheduled_for=args.scheduled_for))
         elif args.action == "reply-all":
@@ -456,6 +496,10 @@ def main(argv: list[str] | None = None) -> int:
             emit(_draft.discard(args.thread_id, args.draft_id))
         elif args.action == "attach":
             emit(_draft.attach(args.thread_id, args.draft_id, args.file, content_type=args.content_type))
+        elif args.action == "share":
+            emit(_share.share(args.thread_id, args.draft_id, name=args.name))
+        elif args.action == "unshare":
+            emit(_share.unshare(args.thread_id, args.draft_id))
 
     # -- comment --
     elif args.command == "comment":
@@ -475,12 +519,6 @@ def main(argv: list[str] | None = None) -> int:
             emit(_send.validate(args.thread_id, args.draft_id))
         elif args.confirm:
             emit(_send.execute(args.thread_id, args.draft_id, delay=args.delay))
-
-    # -- share / unshare --
-    elif args.command == "share":
-        emit(_share.share(args.thread_id, args.draft_id, name=args.name))
-    elif args.command == "unshare":
-        emit(_share.unshare(args.thread_id, args.draft_id))
 
     # -- setup --
     elif args.command == "setup":
@@ -512,3 +550,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     return 0  # emit() calls sys.exit, so this is only reached if no command matched
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
