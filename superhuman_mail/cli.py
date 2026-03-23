@@ -451,74 +451,74 @@ def main(argv: list[str] | None = None) -> int:
     # -- thread --
     if args.command == "thread":
         if not hasattr(args, "action") or not args.action:
-            emit(fail("thread", [error("input", "MISSING_ACTION", False, "Use: shm thread messages|userdata|list|search")]))
+            return emit(fail("thread", [error("input", "MISSING_ACTION", False, "Use: shm thread messages|userdata|list|search")]))
         elif args.action == "messages":
-            emit(_thread.messages(args.thread_id))
+            return emit(_thread.messages(args.thread_id))
         elif args.action == "userdata":
-            emit(_thread.userdata(args.thread_id))
+            return emit(_thread.userdata(args.thread_id))
         elif args.action == "list":
             result = _thread.list_threads(limit=args.limit, unread=args.unread, include_participants=args.participants, account=args.account)
             if args.fail_empty and result["status"] == "succeeded" and result["data"]["returned"] == 0:
-                emit(result, exit_code=3)
-            emit(result)
+                return emit(result, exit_code=3)
+            return emit(result)
         elif args.action == "search":
             result = _thread.search(args.query, limit=args.limit, unread=args.unread, include_participants=args.participants, account=args.account)
             if args.fail_empty and result["status"] == "succeeded" and result["data"]["returned"] == 0:
-                emit(result, exit_code=3)
-            emit(result)
+                return emit(result, exit_code=3)
+            return emit(result)
 
     # -- opens --
     elif args.command == "opens":
         if args.thread_id and args.recent:
-            emit(fail("opens", [error("input", "CONFLICT", False, "Use either a thread_id or --recent, not both")]))
+            return emit(fail("opens", [error("input", "CONFLICT", False, "Use either a thread_id or --recent, not both")]))
         elif args.recent:
-            emit(_opens.recent(limit=args.limit, recipient=args.recipient))
+            return emit(_opens.recent(limit=args.limit, recipient=args.recipient))
         elif args.thread_id:
-            emit(_opens.per_thread(args.thread_id, recipient=args.recipient))
+            return emit(_opens.per_thread(args.thread_id, recipient=args.recipient))
         else:
-            emit(fail("opens", [error("input", "MISSING_ARG", False, "Provide a thread_id or use --recent")]))
+            return emit(fail("opens", [error("input", "MISSING_ARG", False, "Provide a thread_id or use --recent")]))
 
     # -- draft --
     elif args.command == "draft":
         if not hasattr(args, "action") or not args.action:
-            emit(fail("draft", [error("input", "MISSING_ACTION", False, "Use: shm draft reply|reply-all|forward|compose|read|discard|attach|share|unshare")]))
+            return emit(fail("draft", [error("input", "MISSING_ACTION", False, "Use: shm draft reply|reply-all|forward|compose|read|discard|attach|share|unshare")]))
         elif args.action == "reply":
-            emit(_draft.create_reply(args.thread_id, args.body, body_html=args.body_html, scheduled_for=args.scheduled_for))
+            return emit(_draft.create_reply(args.thread_id, args.body, body_html=args.body_html, scheduled_for=args.scheduled_for))
         elif args.action == "reply-all":
-            emit(_draft.create_reply(args.thread_id, args.body, reply_all=True, body_html=args.body_html, scheduled_for=args.scheduled_for))
+            return emit(_draft.create_reply(args.thread_id, args.body, reply_all=True, body_html=args.body_html, scheduled_for=args.scheduled_for))
         elif args.action == "forward":
-            emit(_draft.create_forward(args.thread_id, args.body, to=args.to, cc=args.cc, bcc=args.bcc, body_html=args.body_html, scheduled_for=args.scheduled_for))
+            return emit(_draft.create_forward(args.thread_id, args.body, to=args.to, cc=args.cc, bcc=args.bcc, body_html=args.body_html, scheduled_for=args.scheduled_for))
         elif args.action == "compose":
-            emit(_draft.create_compose(args.subject, args.body, to=args.to, cc=args.cc, bcc=args.bcc, body_html=args.body_html, scheduled_for=args.scheduled_for))
+            return emit(_draft.create_compose(args.subject, args.body, to=args.to, cc=args.cc, bcc=args.bcc, body_html=args.body_html, scheduled_for=args.scheduled_for))
         elif args.action == "read":
-            emit(_draft.read(args.thread_id, draft_id=args.draft_id))
+            return emit(_draft.read(args.thread_id, draft_id=args.draft_id))
         elif args.action == "discard":
-            emit(_draft.discard(args.thread_id, args.draft_id))
+            return emit(_draft.discard(args.thread_id, args.draft_id))
         elif args.action == "attach":
-            emit(_draft.attach(args.thread_id, args.draft_id, args.file, content_type=args.content_type))
+            return emit(_draft.attach(args.thread_id, args.draft_id, args.file, content_type=args.content_type))
         elif args.action == "share":
-            emit(_share.share(args.thread_id, args.draft_id, name=args.name))
+            return emit(_share.share(args.thread_id, args.draft_id, name=args.name))
         elif args.action == "unshare":
-            emit(_share.unshare(args.thread_id, args.draft_id))
+            return emit(_share.unshare(args.thread_id, args.draft_id))
 
     # -- comment --
     elif args.command == "comment":
         if not hasattr(args, "action") or not args.action:
-            emit(fail("comment", [error("input", "MISSING_ACTION", False, "Use: shm comment post|read|discard")]))
+            return emit(fail("comment", [error("input", "MISSING_ACTION", False, "Use: shm comment post|read|discard")]))
         elif args.action == "post":
             mentions = [{"email": m[0], "fullName": m[1]} for m in (args.mention or [])]
-            emit(_comment.post(args.thread_id, args.body, mentions=mentions or None))
+            return emit(_comment.post(args.thread_id, args.body, mentions=mentions or None))
         elif args.action == "read":
-            emit(_comment.read(args.thread_id))
+            return emit(_comment.read(args.thread_id))
         elif args.action == "discard":
-            emit(_comment.discard(args.thread_id, args.comment_id))
+            return emit(_comment.discard(args.thread_id, args.comment_id))
 
     # -- send --
     elif args.command == "send":
         if args.dry_run:
-            emit(_send.validate(args.thread_id, args.draft_id))
+            return emit(_send.validate(args.thread_id, args.draft_id))
         elif args.confirm:
-            emit(_send.execute(args.thread_id, args.draft_id, delay=args.delay))
+            return emit(_send.execute(args.thread_id, args.draft_id, delay=args.delay))
 
     # -- setup --
     elif args.command == "setup":
@@ -526,30 +526,30 @@ def main(argv: list[str] | None = None) -> int:
             from pathlib import Path
             config_path = Path(args.config) if args.config else None
             result = _setup.run_setup(config_path=config_path)
-            emit(ok("setup", result))
+            return emit(ok("setup", result))
         except Exception as e:
-            emit(fail("setup", [error("input", "SETUP_FAILED", False, str(e))]))
+            return emit(fail("setup", [error("input", "SETUP_FAILED", False, str(e))]))
 
     # -- doctor --
     elif args.command == "doctor":
-        emit(_doctor())
+        return emit(_doctor())
 
     # -- schema --
     elif args.command == "schema":
         if args.command_name:
             if args.command_name in SCHEMA:
-                emit(ok("schema", SCHEMA[args.command_name]))
+                return emit(ok("schema", SCHEMA[args.command_name]))
             else:
-                emit(fail("schema", [error("not-found", "UNKNOWN_COMMAND", False, f"Unknown command: {args.command_name}. Run `shm schema` for the full list.")]))
+                return emit(fail("schema", [error("not-found", "UNKNOWN_COMMAND", False, f"Unknown command: {args.command_name}. Run `shm schema` for the full list.")]))
         else:
             summary = {name: {"description": s["description"], "safety": s["safety"]} for name, s in SCHEMA.items()}
-            emit(ok("schema", {"commands": summary}))
+            return emit(ok("schema", {"commands": summary}))
 
     else:
         parser.print_help()
         return 1
 
-    return 0  # emit() calls sys.exit, so this is only reached if no command matched
+    return 0
 
 
 if __name__ == "__main__":
