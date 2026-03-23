@@ -15,14 +15,38 @@ This is **not** an official SDK. It uses Superhuman's private API, reverse-engin
 
 ## Install
 
+### As a Pi package (recommended for agents)
+
+```bash
+pi install git:github.com/tmustier/superhuman-mail
+```
+
+This installs the `superhuman-mail` skill, which teaches agents when and how to use `shm`.
+
+You still need to set up the Python CLI (see below).
+
+### CLI setup
+
 ```bash
 git clone https://github.com/tmustier/superhuman-mail.git
 cd superhuman-mail
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -e .
+pip install -e .         # installs `shm` on PATH
 cp config.example.json config.json
 # Fill in config.json with your local values (see below)
+```
+
+To point `shm` at a config file in a different location:
+
+```bash
+export SUPERHUMAN_MAIL_CONFIG=/path/to/config.json
+```
+
+Verify everything works:
+
+```bash
+shm doctor
 ```
 
 ## Config

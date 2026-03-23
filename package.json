@@ -1,0 +1,10 @@
+{
+  "name": "superhuman-mail",
+  "version": "0.1.0",
+  "description": "Unofficial Superhuman mail API client with agent-friendly CLI",
+  "keywords": ["pi-package"],
+  "license": "MIT",
+  "pi": {
+    "skills": ["./skills"]
+  }
+}
