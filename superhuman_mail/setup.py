@@ -20,6 +20,7 @@ import os
 import re
 import sqlite3
 import subprocess
+import tempfile
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -48,6 +49,12 @@ def _check_app_installed() -> None:
         )
 
 
+def _read_config_json() -> dict[str, Any]:
+    if not _CONFIG_JSON.exists():
+        raise RuntimeError(f"Superhuman config.json not found: {_CONFIG_JSON}")
+    return json.loads(_CONFIG_JSON.read_text())
+
+
 def _read_leveldb_strings(pattern: str) -> list[str]:
     """Scan LevelDB files for strings matching a regex pattern."""
     if not _LEVELDB_DIR.exists():
@@ -68,11 +75,9 @@ def _read_leveldb_strings(pattern: str) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-def extract_email() -> str:
-    """Extract email from Superhuman config.json tab paths."""
-    if not _CONFIG_JSON.exists():
-        raise RuntimeError(f"Superhuman config.json not found: {_CONFIG_JSON}")
-    cfg = json.loads(_CONFIG_JSON.read_text())
+def extract_emails() -> list[str]:
+    """Extract signed-in account emails from Superhuman config.json tab paths."""
+    cfg = _read_config_json()
     emails: set[str] = set()
     for window in cfg.get("state", {}).get("windows", []):
         for tab in window.get("tabs", []):
@@ -82,10 +87,32 @@ def extract_email() -> str:
                     emails.add(part)
     if not emails:
         raise RuntimeError("Could not find email in Superhuman config.json tab paths")
+    return sorted(emails)
+
+
+def extract_email(preferred: str | None = None) -> str:
+    """Select the email account to bootstrap.
+
+    When multiple signed-in accounts are detected, callers must provide
+    ``preferred`` to avoid an arbitrary pick.
+    """
+    emails = extract_emails()
+    if preferred:
+        wanted = preferred.strip().lower()
+        match = next((email for email in emails if email.lower() == wanted), None)
+        if match:
+            return match
+        raise RuntimeError(
+            f"Requested email not found in signed-in Superhuman accounts: {preferred}. "
+            f"Available: {', '.join(emails)}"
+        )
     if len(emails) > 1:
-        # Return all, caller can disambiguate
-        return sorted(emails)[0]
-    return emails.pop()
+        raise RuntimeError(
+            "Multiple Superhuman accounts detected. "
+            "Re-run `shm setup --email <address>` to choose one. "
+            f"Available: {', '.join(emails)}"
+        )
+    return emails[0]
 
 
 def extract_device_id() -> str:
@@ -99,12 +126,8 @@ def extract_device_id() -> str:
     return str(device_id)
 
 
-def extract_google_id() -> str:
-    """Extract Google account ID from Superhuman cookie DB.
-
-    The google_id is stored as a cookie NAME (not value) on accounts.superhuman.com.
-    It's a long numeric string like '111089109521166025248'.
-    """
+def extract_google_ids() -> list[str]:
+    """Extract all Google account ID cookie names from Superhuman's cookie DB."""
     if not _COOKIE_DB.exists():
         raise RuntimeError(f"Superhuman cookie DB not found: {_COOKIE_DB}")
     conn = sqlite3.connect(f"file:{_COOKIE_DB}?mode=ro&immutable=1", uri=True)
@@ -112,9 +135,9 @@ def extract_google_id() -> str:
         rows = conn.execute(
             "SELECT name FROM cookies WHERE host_key = 'accounts.superhuman.com'"
         ).fetchall()
-        for (name,) in rows:
-            if re.fullmatch(r"\d{10,}", name):
-                return name
+        ids = sorted({str(name) for (name,) in rows if re.fullmatch(r"\d{10,}", str(name or ""))})
+        if ids:
+            return ids
         raise RuntimeError(
             "Could not find Google account ID cookie in Superhuman cookie DB. "
             "Is the app signed in?"
@@ -123,14 +146,61 @@ def extract_google_id() -> str:
         conn.close()
 
 
-def extract_team_id() -> str:
-    """Extract team ID from Local Storage LevelDB."""
+def extract_google_id(email: str, device_id: str, version: str) -> str:
+    """Select the Google account ID that matches the chosen email account."""
+    candidates = extract_google_ids()
+    if len(candidates) == 1:
+        return candidates[0]
+
+    matches: list[str] = []
+    for google_id in candidates:
+        try:
+            _request_auth_data(email, google_id, device_id, version)
+            matches.append(google_id)
+        except Exception:
+            continue
+
+    if len(matches) == 1:
+        return matches[0]
+    if not matches:
+        raise RuntimeError(
+            f"Multiple Google account cookies detected, but none matched {email}. "
+            "Re-open Superhuman on the desired account and re-run setup."
+        )
+    raise RuntimeError(
+        f"Multiple Google account cookies matched {email}: {', '.join(matches)}. "
+        "Please sign out of the extra account(s) and re-run setup."
+    )
+
+
+def extract_team_ids() -> list[str]:
+    """Extract distinct team IDs from Local Storage LevelDB."""
     hits = _read_leveldb_strings(r"team_[A-Za-z0-9]{15,25}")
     if not hits:
         raise RuntimeError("Could not find team_id in Superhuman Local Storage")
-    # Deduplicate and return the most common
+    return sorted(set(hits))
+
+
+def extract_team_id() -> str:
+    """Extract team ID from Local Storage LevelDB.
+
+    LevelDB logs can contain stale historical values, so prefer the most
+    common team id when there is a clear winner. Only fail on a true tie.
+    """
+    hits = _read_leveldb_strings(r"team_[A-Za-z0-9]{15,25}")
+    if not hits:
+        raise RuntimeError("Could not find team_id in Superhuman Local Storage")
+
     from collections import Counter
-    return Counter(hits).most_common(1)[0][0]
+
+    counts = Counter(hits).most_common()
+    if len(counts) == 1 or counts[0][1] > counts[1][1]:
+        return counts[0][0]
+    raise RuntimeError(
+        "Multiple Superhuman team IDs detected with equal confidence. "
+        "Setup cannot safely choose the right team. "
+        f"Found: {', '.join(sorted({team_id for team_id, _count in counts}))}"
+    )
 
 
 def derive_shard_key(team_id: str) -> str:
@@ -180,13 +250,85 @@ def extract_version() -> str:
     raise RuntimeError("Could not find version timestamp in Superhuman Local Storage")
 
 
-def extract_db_file() -> str:
-    """Find the active SQLite DB file in Superhuman's File System directory.
+def _db_owner_email(entry: Path) -> str | None:
+    """Best-effort: read the mailbox owner email from a wrapped SQLite file."""
+    fd, temp_path = tempfile.mkstemp(prefix="shm-setup-db-", suffix=".sqlite3")
+    try:
+        with open(entry, "rb") as src, os.fdopen(fd, "wb") as dst:
+            src.seek(4096)
+            dst.write(src.read())
+        conn = sqlite3.connect(temp_path)
+        try:
+            row = conn.execute(
+                "SELECT json FROM general WHERE key = 'teamMembers' LIMIT 1"
+            ).fetchone()
+            if not row or not row[0]:
+                return None
+            data = json.loads(row[0])
+            email = data.get("user", {}).get("emailAddress")
+            return str(email) if email else None
+        finally:
+            conn.close()
+    except Exception:
+        return None
+    finally:
+        try:
+            os.remove(temp_path)
+        except OSError:
+            pass
 
-    The DB files have a 4096-byte header followed by SQLite content.
+
+def _best_db_candidate(candidates: list[tuple[Path, str | None]]) -> tuple[Path, str | None]:
+    """Pick the most likely active wrapped SQLite snapshot."""
+    return max(
+        candidates,
+        key=lambda item: (item[0].stat().st_mtime_ns, item[0].name),
+    )
+
+
+def extract_accounts() -> list[dict[str, str]]:
+    """Discover configured Superhuman accounts from local wrapped SQLite DB files.
+
+    If multiple DB files map to the same email, that account is omitted here
+    because the mapping is ambiguous. The selected primary account is added
+    separately by ``run_setup()`` after ``extract_db_file(email)`` resolves it.
     """
     if not _FS_DIR.exists():
         raise RuntimeError(f"Superhuman File System directory not found: {_FS_DIR}")
+
+    matches: dict[str, list[dict[str, str]]] = {}
+    for entry in sorted(_FS_DIR.iterdir()):
+        if not entry.is_file():
+            continue
+        with open(entry, "rb") as f:
+            f.seek(4096)
+            header = f.read(6)
+        if header != b"SQLite":
+            continue
+        email = _db_owner_email(entry)
+        if not email:
+            continue
+        matches.setdefault(email.lower(), []).append({"email": email, "db_file": entry.name})
+
+    accounts: list[dict[str, str]] = []
+    for key in sorted(matches):
+        entries = matches[key]
+        if len(entries) == 1:
+            accounts.append(entries[0])
+    return accounts
+
+
+def extract_db_file(email: str | None = None) -> str:
+    """Find the active SQLite DB file in Superhuman's File System directory.
+
+    The DB files have a 4096-byte header followed by SQLite content.
+    When multiple DBs are present, callers must provide an email so the
+    correct mailbox can be selected deterministically.
+    """
+    if not _FS_DIR.exists():
+        raise RuntimeError(f"Superhuman File System directory not found: {_FS_DIR}")
+
+    candidates: list[tuple[Path, str | None]] = []
     for entry in sorted(_FS_DIR.iterdir()):
         if not entry.is_file():
             continue
@@ -194,8 +336,72 @@ def extract_db_file() -> str:
             f.seek(4096)
             header = f.read(6)
         if header == b"SQLite":
-            return entry.name
-    raise RuntimeError("No valid SQLite DB file found in Superhuman File System")
+            candidates.append((entry, _db_owner_email(entry)))
+
+    if not candidates:
+        raise RuntimeError("No valid SQLite DB file found in Superhuman File System")
+
+    if len(candidates) == 1:
+        entry, owner = candidates[0]
+        if email and owner and owner.lower() != email.lower():
+            raise RuntimeError(
+                f"The only SQLite DB file found belongs to {owner}, not {email}: {entry.name}"
+            )
+        return entry.name
+
+    if email:
+        target = email.lower()
+        matches = [(entry, owner) for entry, owner in candidates if owner and owner.lower() == target]
+        if len(matches) == 1:
+            return matches[0][0].name
+        if len(matches) > 1:
+            return _best_db_candidate(matches)[0].name
+        details = [f"{entry.name} ({owner})" if owner else entry.name for entry, owner in candidates]
+        raise RuntimeError(
+            f"Multiple SQLite DB files detected, but none matched {email}. "
+            f"Available: {', '.join(details)}"
+        )
+
+    details = [f"{entry.name} ({owner})" if owner else entry.name for entry, owner in candidates]
+    raise RuntimeError(
+        "Multiple SQLite DB files detected. "
+        "Re-run `shm setup --email <address>` to choose the right mailbox. "
+        f"Available: {', '.join(details)}"
+    )
+
+
+def _request_auth_data(email: str, google_id: str, device_id: str, version: str) -> dict[str, Any]:
+    """Exchange a local Superhuman session cookie for auth tokens."""
+    key = _get_encryption_key()
+    session_cookie = _decrypt_session_cookie(google_id, key)
+
+    headers = {
+        "Content-Type": "application/json",
+        "Origin": "https://mail.superhuman.com",
+        "x-device-id": device_id,
+        "x-superhuman-version": version,
+    }
+
+    req = urllib.request.Request(
+        "https://accounts.superhuman.com/~backend/v3/sessions.getCsrfToken",
+        headers={**headers, "Cookie": f"{google_id}={session_cookie}"},
+    )
+    resp = urllib.request.urlopen(req, timeout=15)
+    csrf_cookie = None
+    for h, v in resp.headers.items():
+        if h.lower() == "set-cookie" and v.startswith("csrf="):
+            csrf_cookie = v.split(";")[0].split("=", 1)[1]
+    csrf_token = json.loads(resp.read())["csrfToken"]
+
+    all_cookies = f"{google_id}={session_cookie}; csrf={csrf_cookie}"
+    req2 = urllib.request.Request(
+        "https://accounts.superhuman.com/~backend/v3/sessions.getTokens",
+        data=json.dumps({"emailAddress": email, "googleId": google_id}).encode(),
+        headers={**headers, "Cookie": all_cookies, "X-CSRF-Token": csrf_token},
+        method="POST",
+    )
+    resp2 = urllib.request.urlopen(req2, timeout=15)
+    return json.loads(resp2.read())
 
 
 def extract_author_name(email: str, google_id: str, device_id: str, version: str) -> str:
@@ -204,41 +410,9 @@ def extract_author_name(email: str, google_id: str, device_id: str, version: str
     Falls back to deriving from email if the API call fails.
     """
     try:
-        key = _get_encryption_key()
-        session_cookie = _decrypt_session_cookie(google_id, key)
-
-        headers = {
-            "Content-Type": "application/json",
-            "Origin": "https://mail.superhuman.com",
-            "x-device-id": device_id,
-            "x-superhuman-version": version,
-        }
-
-        # Step 1: CSRF token
-        req = urllib.request.Request(
-            "https://accounts.superhuman.com/~backend/v3/sessions.getCsrfToken",
-            headers={**headers, "Cookie": f"{google_id}={session_cookie}"},
-        )
-        resp = urllib.request.urlopen(req, timeout=15)
-        csrf_cookie = None
-        for h, v in resp.headers.items():
-            if h.lower() == "set-cookie" and v.startswith("csrf="):
-                csrf_cookie = v.split(";")[0].split("=", 1)[1]
-        csrf_token = json.loads(resp.read())["csrfToken"]
-
-        # Step 2: Exchange for tokens
-        all_cookies = f"{google_id}={session_cookie}; csrf={csrf_cookie}"
-        req2 = urllib.request.Request(
-            "https://accounts.superhuman.com/~backend/v3/sessions.getTokens",
-            data=json.dumps({"emailAddress": email, "googleId": google_id}).encode(),
-            headers={**headers, "Cookie": all_cookies, "X-CSRF-Token": csrf_token},
-            method="POST",
-        )
-        resp2 = urllib.request.urlopen(req2, timeout=15)
-        data = json.loads(resp2.read())
+        data = _request_auth_data(email, google_id, device_id, version)
         access_token = data.get("authData", {}).get("accessToken", "")
 
-        # Step 3: Google userinfo (returns full name)
         if access_token:
             req3 = urllib.request.Request(
                 "https://www.googleapis.com/oauth2/v3/userinfo",
@@ -306,7 +480,7 @@ def _decrypt_session_cookie(google_id: str, key: bytes) -> str:
 # ---------------------------------------------------------------------------
 
 
-def run_setup(config_path: Path | None = None) -> dict[str, Any]:
+def run_setup(config_path: Path | None = None, *, email: str | None = None) -> dict[str, Any]:
     """Extract all credentials and write config.json.
 
     Returns the generated config dict.
@@ -320,11 +494,11 @@ def run_setup(config_path: Path | None = None) -> dict[str, Any]:
 
     # 1. Email
     try:
-        email = extract_email()
-        steps.append({"field": "email", "status": "ok", "value": email})
+        selected_email = extract_email(email)
+        steps.append({"field": "email", "status": "ok", "value": selected_email})
     except Exception as e:
         errors.append(f"email: {e}")
-        email = ""
+        selected_email = ""
 
     # 2. Device ID
     try:
@@ -334,15 +508,26 @@ def run_setup(config_path: Path | None = None) -> dict[str, Any]:
         errors.append(f"device_id: {e}")
         device_id = ""
 
-    # 3. Google ID
+    # 3. Version
     try:
-        google_id = extract_google_id()
-        steps.append({"field": "google_id", "status": "ok", "value": google_id})
+        version = extract_version()
+        steps.append({"field": "version", "status": "ok", "value": version})
+    except Exception as e:
+        errors.append(f"version: {e}")
+        version = ""
+
+    # 4. Google ID
+    try:
+        google_id = extract_google_id(selected_email, device_id, version) if selected_email and device_id and version else ""
+        if google_id:
+            steps.append({"field": "google_id", "status": "ok", "value": google_id})
+        elif not errors:
+            errors.append("google_id: skipped (missing prerequisites)")
     except Exception as e:
         errors.append(f"google_id: {e}")
         google_id = ""
 
-    # 4. Team ID
+    # 5. Team ID
     try:
         team_id = extract_team_id()
         steps.append({"field": "team_id", "status": "ok", "value": team_id})
@@ -350,7 +535,7 @@ def run_setup(config_path: Path | None = None) -> dict[str, Any]:
         errors.append(f"team_id: {e}")
         team_id = ""
 
-    # 5. Shard key
+    # 6. Shard key
     try:
         shard_key = derive_shard_key(team_id) if team_id else ""
         if shard_key:
@@ -359,27 +544,22 @@ def run_setup(config_path: Path | None = None) -> dict[str, Any]:
         errors.append(f"team_shard_key: {e}")
         shard_key = ""
 
-    # 6. Version
-    try:
-        version = extract_version()
-        steps.append({"field": "version", "status": "ok", "value": version})
-    except Exception as e:
-        errors.append(f"version: {e}")
-        version = ""
-
     # 7. DB file
     try:
-        db_file = extract_db_file()
-        steps.append({"field": "db_file", "status": "ok", "value": db_file})
+        db_file = extract_db_file(selected_email) if selected_email else ""
+        if db_file:
+            steps.append({"field": "db_file", "status": "ok", "value": db_file})
+        elif not errors:
+            errors.append("db_file: skipped (missing prerequisites)")
     except Exception as e:
         errors.append(f"db_file: {e}")
         db_file = ""
 
     # 8. Author name (requires successful extraction of email, google_id, device_id, version)
     author_name = ""
-    if email and google_id and device_id and version:
+    if selected_email and google_id and device_id and version:
         try:
-            author_name = extract_author_name(email, google_id, device_id, version)
+            author_name = extract_author_name(selected_email, google_id, device_id, version)
             steps.append({"field": "author_name", "status": "ok", "value": author_name})
         except Exception as e:
             errors.append(f"author_name: {e}")
@@ -392,15 +572,20 @@ def run_setup(config_path: Path | None = None) -> dict[str, Any]:
             + "\n".join(f"  • {e}" for e in errors)
         )
 
+    accounts = extract_accounts()
+    if not any(a["email"].lower() == selected_email.lower() for a in accounts):
+        accounts.append({"email": selected_email, "db_file": db_file})
+    accounts = sorted(accounts, key=lambda a: a["email"].lower())
+
     # Build config
     config: dict[str, Any] = {
-        "email_account": email,
+        "email_account": selected_email,
         "superhuman": {
             "superhuman_base": "~/Library/Application Support/Superhuman",
-            "accounts": [{"email": email, "db_file": db_file}],
+            "accounts": accounts,
         },
         "superhuman_api": {
-            "email": email,
+            "email": selected_email,
             "author_name": author_name,
             "google_id": google_id,
             "device_id": device_id,

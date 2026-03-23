@@ -244,9 +244,10 @@ SCHEMA: dict[str, dict[str, Any]] = {
         "description": "Auto-detect credentials from local Superhuman app and write config.json",
         "args": {
             "--config": {"required": False, "type": "filepath", "hint": "Output path (default: config.json in repo root)"},
+            "--email": {"required": False, "type": "string", "hint": "Choose account when multiple Superhuman accounts are signed in"},
         },
         "safety": "write",
-        "example": "shm setup",
+        "example": "shm setup --email someone@example.com",
     },
     "doctor": {
         "description": "Verify config, auth, and connectivity",
@@ -447,6 +448,7 @@ def _build_parser() -> argparse.ArgumentParser:
     # -- setup --
     setup_p = sub.add_parser("setup", help="Auto-detect credentials from local Superhuman app")
     setup_p.add_argument("--config", help="Output path for config.json")
+    setup_p.add_argument("--email", help="Email account to bootstrap when multiple accounts are signed in")
 
     # -- doctor --
     sub.add_parser("doctor", help="Verify config, auth, and connectivity")
@@ -555,7 +557,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             from pathlib import Path
             config_path = Path(args.config) if args.config else None
-            result = _setup.run_setup(config_path=config_path)
+            result = _setup.run_setup(config_path=config_path, email=args.email)
             return emit(ok("setup", result))
         except Exception as e:
             return emit(fail("setup", [error("input", "SETUP_FAILED", False, str(e))]))

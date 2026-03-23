@@ -30,6 +30,12 @@ shm setup
 shm doctor
 ```
 
+If multiple Superhuman accounts are signed in, pick one explicitly:
+
+```bash
+shm setup --email someone@example.com
+```
+
 If the config lives elsewhere:
 
 ```bash
@@ -37,7 +43,7 @@ shm setup --config /path/to/config.json
 export SUPERHUMAN_MAIL_CONFIG=/path/to/config.json
 ```
 
-If `shm doctor` fails, make sure Superhuman is running and signed in, then rerun `shm setup`.
+If `shm doctor` fails, make sure Superhuman is running and signed in, then rerun `shm setup` (with `--email` if you have multiple accounts).
 
 ## Core safety rule
 
@@ -119,7 +125,7 @@ shm comment discard <thread_id> <comment_id>
 ```bash
 shm send --dry-run <thread_id> <draft_id>
 shm send --confirm <thread_id> <draft_id>
-shm setup [--config path]
+shm setup [--config path] [--email address]
 shm doctor
 shm schema [command]
 ```

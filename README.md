@@ -38,6 +38,12 @@ shm doctor
 
 `shm setup` reads credentials directly from the local Superhuman desktop app. No manual config should be necessary.
 
+If multiple Superhuman accounts are signed in, choose one explicitly:
+
+```bash
+shm setup --email someone@example.com
+```
+
 To use a config somewhere else:
 
 ```bash
@@ -65,7 +71,7 @@ It extracts fields like:
 - Superhuman version
 - local SQLite DB path
 
-If Superhuman updates or you switch accounts, just run `shm setup` again.
+If Superhuman updates or you switch accounts, just run `shm setup` again. For multi-account setups, pass `--email`.
 
 ## CLI
 
@@ -133,6 +139,7 @@ shm send --dry-run <thread_id> <draft_id>
 shm send --confirm <thread_id> <draft_id>
 
 # Diagnostics
+shm setup [--email someone@example.com]
 shm doctor
 shm schema
 shm schema draft.forward
