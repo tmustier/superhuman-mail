@@ -111,6 +111,11 @@ shm draft reply-all <thread_id> --body "Sounds good"
 shm draft forward <thread_id> --body "FYI" --to someone@example.com
 shm draft compose --subject "Hello" --body "Hi there" --to someone@example.com
 
+# Smart-send options (available on all draft creation commands)
+shm draft reply <thread_id> --body "Following up" --scheduled-for "2026-03-26T09:00:00Z"
+shm draft reply <thread_id> --body "Checking in" --scheduled-for "2026-03-26T09:00:00Z" --abort-on-reply
+shm draft compose --subject "Hi" --body "..." --to x@example.com --reminder "2026-04-01T09:00:00Z"
+
 # Read / manage drafts
 shm draft read <thread_id>
 shm draft discard <thread_id> <draft_id>
@@ -138,6 +143,7 @@ shm schema draft.forward
 - `thread userdata` is intentionally marked **advanced**. Prefer purpose-built commands like `draft read`, `comment read`, or `opens` when possible.
 - `thread list` and `thread search` support `--account` for multi-account setups.
 - `thread list` and `thread search` support `--fail-empty` to exit with code `3` on zero results.
+- All draft creation commands support smart-send flags: `--scheduled-for`, `--abort-on-reply`, `--reminder`, `--sensitivity-label-id`, `--sensitivity-tenant-id`. Use `shm schema draft.reply` for details.
 - `opens` requires exactly one of:
   - `<thread_id>`
   - `--recent`
@@ -188,6 +194,8 @@ result = c.opens.recent(limit=10)
 
 # Drafts
 result = c.draft.create_reply("19d001f35612a211", body="Thanks!")
+result = c.draft.create_reply("19d001f35612a211", body="Following up",
+                              scheduled_for="2026-03-26T09:00:00Z", abort_on_reply=True)
 result = c.draft.create_compose(subject="Hi", body="Hello", to=["someone@example.com"])
 result = c.draft.share("19d001f35612a211", "draft00abc123")
 
