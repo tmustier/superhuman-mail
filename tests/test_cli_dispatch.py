@@ -60,3 +60,13 @@ class TestMainReturnsExitCode:
         out = json.loads(capsys.readouterr().out)
         assert out["status"] == "failed"
         assert "MISSING_ACTION" in out["errors"][0]["code"]
+
+    def test_setup_passes_email(self, capsys):
+        with patch("superhuman_mail.cli._setup.run_setup", return_value={"config": {}, "path": "/tmp/config.json", "steps": []}) as run_setup:
+            code = main(["setup", "--config", "/tmp/config.json", "--email", "chosen@example.com"])
+        assert code == 0
+        run_setup.assert_called_once()
+        assert run_setup.call_args.kwargs["email"] == "chosen@example.com"
+        assert str(run_setup.call_args.kwargs["config_path"]) == "/tmp/config.json"
+        out = json.loads(capsys.readouterr().out)
+        assert out["status"] == "succeeded"
