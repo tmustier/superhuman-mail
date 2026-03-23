@@ -57,7 +57,8 @@ def get_db_path(account: str | None = None) -> Path:
     with open(data_file, "rb") as src:
         src.seek(4096)
         content = src.read()
-    with open(temp_db, "wb") as dst:
+    fd = os.open(str(temp_db), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as dst:
         dst.write(content)
     return temp_db
 
