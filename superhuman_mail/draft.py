@@ -242,15 +242,15 @@ def _parse_datetime(value: Any) -> datetime | None:
     if not value:
         return None
     if isinstance(value, datetime):
-        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+        return value if value.tzinfo else value.astimezone()
     if isinstance(value, (int, float)):
-        return datetime.fromtimestamp(value / 1000, timezone.utc)
+        return datetime.fromtimestamp(value / 1000).astimezone()
     if isinstance(value, str):
         try:
             if value.endswith("Z"):
                 return datetime.fromisoformat(value.replace("Z", "+00:00"))
             parsed = datetime.fromisoformat(value)
-            return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+            return parsed if parsed.tzinfo else parsed.astimezone()
         except ValueError:
             return None
     return None
@@ -291,8 +291,7 @@ def _forward_contacts_text(contacts: list[dict[str, Any]] | None) -> str:
     return ", ".join(parts)
 
 
-def _forward_body_html(raw_message: dict[str, Any], rendered_message: dict[str, Any] | None = None) -> str:
-    body = (rendered_message or {}).get("body")
+def _body_html_from_value(body: Any) -> str:
     if isinstance(body, dict):
         html = str(body.get("html", "")).strip()
         if html:
@@ -302,6 +301,17 @@ def _forward_body_html(raw_message: dict[str, Any], rendered_message: dict[str, 
             return _text_to_html(text)
     elif isinstance(body, str) and body.strip():
         return _text_to_html(body.strip())
+    return ""
+
+
+def _forward_body_html(raw_message: dict[str, Any], rendered_message: dict[str, Any] | None = None) -> str:
+    rendered_html = _body_html_from_value((rendered_message or {}).get("body"))
+    if rendered_html:
+        return rendered_html
+
+    raw_html = _body_html_from_value(raw_message.get("body"))
+    if raw_html:
+        return raw_html
 
     fallback = str(raw_message.get("snippet", "")).strip()
     return _text_to_html(fallback) if fallback else "<div></div>"
@@ -328,6 +338,15 @@ def _build_forward_quoted_content(raw_message: dict[str, Any], rendered_message:
         lines.append(f"<span>Cc: {cc_text}<br/></span>")
 
     return f"<div><div>{''.join(lines)}</div><br/><div>{body_html}</div></div>"
+
+
+def _find_forward_message(messages: list[dict[str, Any]]) -> tuple[int, dict[str, Any]]:
+    if not messages:
+        raise RuntimeError("Thread has no messages")
+    for index in range(len(messages) - 1, -1, -1):
+        if not _is_system_sender(messages[index]):
+            return index, messages[index]
+    return len(messages) - 1, messages[-1]
 
 
 def _inline_quoted_content(body_html: str, quoted_content: str) -> str:
@@ -527,14 +546,14 @@ def create_forward(
         if not messages:
             raise RuntimeError(f"Thread has no messages: {thread_id}")
 
-        last = messages[-1]
+        forward_index, forward_message = _find_forward_message(messages)
         try:
             rendered_messages = _local.get_messages(thread_id, account)
-            rendered_last = rendered_messages[-1] if rendered_messages else None
+            rendered_last = rendered_messages[forward_index] if forward_index < len(rendered_messages) else None
         except Exception:
             rendered_last = None
 
-        quoted_content = _build_forward_quoted_content(last, rendered_last)
+        quoted_content = _build_forward_quoted_content(forward_message, rendered_last)
         did = _draft_id()
         now_ms = int(time.time() * 1000)
         to_list = _normalize_contacts(to)
@@ -550,11 +569,11 @@ def create_forward(
             "to": to_list,
             "cc": cc_list,
             "bcc": bcc_list,
-            "subject": _forward_subject(str(last.get("subject", ""))),
+            "subject": _forward_subject(str(forward_message.get("subject", ""))),
             "body": _inline_quoted_content(composed_body, quoted_content),
             "snippet": _snippet(body),
-            "inReplyTo": str(last.get("id", "")) or None,
-            "inReplyToRfc822Id": last.get("rfc822Id") or None,
+            "inReplyTo": str(forward_message.get("id", "")) or None,
+            "inReplyToRfc822Id": forward_message.get("rfc822Id") or None,
             "labelIds": ["DRAFT"],
             "clientCreatedAt": now_ms,
             "date": _iso_now(),
@@ -562,7 +581,7 @@ def create_forward(
             "lastSessionId": str(uuid.uuid4()),
             "quotedContent": quoted_content,
             "quotedContentInlined": bool(quoted_content),
-            "references": [last["rfc822Id"]] if last.get("rfc822Id") else [],
+            "references": [forward_message["rfc822Id"]] if forward_message.get("rfc822Id") else [],
             "rfc822Id": _rfc822_id(),
             "schemaVersion": 3,
             "attachments": [],

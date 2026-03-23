@@ -59,13 +59,15 @@ class TestBuildForwardQuotedContent:
         assert "Cc: Carol Copy &lt;carol@example.com&gt;" in quoted
         assert "<div><b>Rendered HTML</b></div>" in quoted
 
-    def test_falls_back_to_snippet_when_rendered_body_is_unavailable(self):
+    def test_prefers_raw_body_before_snippet_when_rendered_body_is_unavailable(self):
         raw = _raw_msg(cc=[], snippet="Line one\n\nLine two")
+        raw["body"] = {"text": "Longer raw body", "html": ""}
 
         quoted = _build_forward_quoted_content(raw, None)
 
         assert "Cc:" not in quoted
-        assert "Line one<br><br>Line two" in quoted
+        assert "Longer raw body" in quoted
+        assert "Line one<br><br>Line two" not in quoted
 
 
 # ---------------------------------------------------------------------------
@@ -134,3 +136,49 @@ class TestCreateForward:
         assert "Snippet fallback" in draft["quotedContent"]
         assert "Cc:" not in draft["quotedContent"]
         assert draft["quotedContentInlined"] is True
+
+    def test_skips_superhuman_system_messages_when_choosing_forward_content(self):
+        customer = _raw_msg(
+            msg_id="msg-customer",
+            sender=_contact("alice@example.com", "Alice Example"),
+            subject="Customer thread",
+            snippet="Customer body",
+            rfc822_id="<customer@example.com>",
+        )
+        reminder = _raw_msg(
+            msg_id="msg-reminder",
+            sender=_contact("reminder@superhuman.com", "Superhuman Reminder"),
+            to=[],
+            cc=[],
+            subject="Reminder",
+            snippet="Reminder body",
+            rfc822_id="<reminder@superhuman.com>",
+        )
+        captured: dict[str, object] = {}
+
+        def _fake_write(draft: dict, command: str):
+            captured["draft"] = draft
+            return {"status": "succeeded", "command": command, "data": {}, "errors": [], "warnings": []}
+
+        with (
+            patch("superhuman_mail.draft._local.get_thread_json", return_value={"messages": [customer, reminder]}),
+            patch(
+                "superhuman_mail.draft._local.get_messages",
+                return_value=[
+                    {"body": {"text": "Customer rendered body", "html": ""}},
+                    {"body": {"text": "Reminder rendered body", "html": ""}},
+                ],
+            ),
+            patch("superhuman_mail.draft._default_from", return_value={"email": "me@example.com", "name": "Me Example"}),
+            patch("superhuman_mail.draft._config.timezone", return_value="Europe/London"),
+            patch("superhuman_mail.draft._write_draft", side_effect=_fake_write),
+        ):
+            create_forward("thread-1", "FYI")
+
+        draft = captured["draft"]
+        assert isinstance(draft, dict)
+        assert "Alice Example &lt;alice@example.com&gt;" in draft["quotedContent"]
+        assert "Superhuman Reminder" not in draft["quotedContent"]
+        assert draft["subject"] == "Fwd: Customer thread"
+        assert draft["inReplyTo"] == "msg-customer"
+        assert draft["references"] == ["<customer@example.com>"]
