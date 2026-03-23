@@ -59,6 +59,15 @@ class TestBuildForwardQuotedContent:
         assert "Cc: Carol Copy &lt;carol@example.com&gt;" in quoted
         assert "<div><b>Rendered HTML</b></div>" in quoted
 
+    def test_falls_back_to_text_when_html_references_inline_cid_parts(self):
+        raw = _raw_msg(snippet="Fallback snippet")
+        rendered = {"body": {"text": "Plain fallback body", "html": '<div><img src="cid:logo@example.com"></div>'}}
+
+        quoted = _build_forward_quoted_content(raw, rendered)
+
+        assert "Plain fallback body" in quoted
+        assert "cid:logo@example.com" not in quoted
+
     def test_prefers_raw_body_before_snippet_when_rendered_body_is_unavailable(self):
         raw = _raw_msg(cc=[], snippet="Line one\n\nLine two")
         raw["body"] = {"text": "Longer raw body", "html": ""}
@@ -68,6 +77,14 @@ class TestBuildForwardQuotedContent:
         assert "Cc:" not in quoted
         assert "Longer raw body" in quoted
         assert "Line one<br><br>Line two" not in quoted
+
+    def test_formats_epoch_dates_in_configured_mailbox_timezone(self):
+        raw = _raw_msg(date=1768480200000)
+
+        with patch("superhuman_mail.draft._config.timezone", return_value="America/New_York"):
+            quoted = _build_forward_quoted_content(raw, None)
+
+        assert "Thursday, January 15 2026 at 7:30 AM EST" in quoted
 
 
 # ---------------------------------------------------------------------------

@@ -12,6 +12,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from . import _auth, _config, _local, thread as _thread
 from ._envelope import classify_exception, fail, ok
@@ -238,19 +239,28 @@ def _text_to_html(text: str) -> str:
     return f"<div>{html_mod.escape(text).replace(chr(10), '<br>')}</div>"
 
 
+def _mailbox_tzinfo() -> Any:
+    try:
+        return ZoneInfo(_config.timezone())
+    except Exception:
+        return datetime.now().astimezone().tzinfo or timezone.utc
+
+
+
 def _parse_datetime(value: Any) -> datetime | None:
     if not value:
         return None
+    mailbox_tz = _mailbox_tzinfo()
     if isinstance(value, datetime):
-        return value if value.tzinfo else value.astimezone()
+        return value if value.tzinfo else value.replace(tzinfo=mailbox_tz)
     if isinstance(value, (int, float)):
-        return datetime.fromtimestamp(value / 1000).astimezone()
+        return datetime.fromtimestamp(value / 1000, mailbox_tz)
     if isinstance(value, str):
         try:
             if value.endswith("Z"):
                 return datetime.fromisoformat(value.replace("Z", "+00:00"))
             parsed = datetime.fromisoformat(value)
-            return parsed if parsed.tzinfo else parsed.astimezone()
+            return parsed if parsed.tzinfo else parsed.replace(tzinfo=mailbox_tz)
         except ValueError:
             return None
     return None
@@ -291,16 +301,24 @@ def _forward_contacts_text(contacts: list[dict[str, Any]] | None) -> str:
     return ", ".join(parts)
 
 
+def _html_has_inline_cid_refs(html: str) -> bool:
+    lowered = html.lower()
+    return "cid:" in lowered or "src-cid=" in lowered
+
+
+
 def _body_html_from_value(body: Any) -> str:
     if isinstance(body, dict):
         html = str(body.get("html", "")).strip()
-        if html:
+        if html and not _html_has_inline_cid_refs(html):
             return html
         text = str(body.get("text", "")).strip()
         if text:
             return _text_to_html(text)
     elif isinstance(body, str) and body.strip():
-        return _text_to_html(body.strip())
+        html = body.strip()
+        if not _html_has_inline_cid_refs(html):
+            return _text_to_html(html)
     return ""
 
 
