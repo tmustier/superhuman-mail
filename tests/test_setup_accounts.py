@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
-from superhuman_mail.setup import extract_accounts, extract_db_file, extract_email, extract_google_id
+from superhuman_mail.setup import extract_accounts, extract_db_file, extract_email, extract_google_id, extract_team_id
 
 
 def _write_config(path: Path, tab_paths: list[str]) -> None:
@@ -101,6 +101,16 @@ class TestExtractDbFile:
                 {"email": "two@example.com", "db_file": "00000002"},
             ]
 
+    def test_extract_accounts_omits_ambiguous_secondary_mailboxes(self, tmp_path):
+        _write_wrapped_db(tmp_path, "00000001", "one@example.com")
+        _write_wrapped_db(tmp_path, "00000002", "one@example.com")
+        _write_wrapped_db(tmp_path, "00000003", "two@example.com")
+
+        with patch("superhuman_mail.setup._FS_DIR", tmp_path):
+            assert extract_accounts() == [
+                {"email": "two@example.com", "db_file": "00000003"},
+            ]
+
 
 class TestExtractGoogleId:
     def test_matching_google_id_is_selected_for_email(self):
@@ -113,8 +123,25 @@ class TestExtractGoogleId:
             with patch("superhuman_mail.setup._request_auth_data", side_effect=fake_request):
                 assert extract_google_id("two@example.com", "device-1", "2026-03-23T00:00:00Z") == "2222222222"
 
+    def test_single_google_id_is_still_validated(self):
+        with patch("superhuman_mail.setup.extract_google_ids", return_value=["1111111111"]):
+            with patch("superhuman_mail.setup._request_auth_data", side_effect=RuntimeError("wrong account")):
+                with pytest.raises(RuntimeError, match="none matched"):
+                    extract_google_id("missing@example.com", "device-1", "2026-03-23T00:00:00Z")
+
     def test_raises_when_no_google_id_matches_email(self):
         with patch("superhuman_mail.setup.extract_google_ids", return_value=["1111111111", "2222222222"]):
             with patch("superhuman_mail.setup._request_auth_data", side_effect=RuntimeError("wrong account")):
                 with pytest.raises(RuntimeError, match="none matched"):
                     extract_google_id("missing@example.com", "device-1", "2026-03-23T00:00:00Z")
+
+
+class TestExtractTeamId:
+    def test_single_team_id_returns_value(self):
+        with patch("superhuman_mail.setup._read_leveldb_strings", return_value=["team_abc123456789012", "team_abc123456789012"]):
+            assert extract_team_id() == "team_abc123456789012"
+
+    def test_multiple_team_ids_raise(self):
+        with patch("superhuman_mail.setup._read_leveldb_strings", return_value=["team_abc123456789012", "team_def123456789012"]):
+            with pytest.raises(RuntimeError, match="Multiple Superhuman team IDs detected"):
+                extract_team_id()

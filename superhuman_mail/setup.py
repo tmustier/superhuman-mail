@@ -149,8 +149,6 @@ def extract_google_ids() -> list[str]:
 def extract_google_id(email: str, device_id: str, version: str) -> str:
     """Select the Google account ID that matches the chosen email account."""
     candidates = extract_google_ids()
-    if len(candidates) == 1:
-        return candidates[0]
 
     matches: list[str] = []
     for google_id in candidates:
@@ -173,14 +171,28 @@ def extract_google_id(email: str, device_id: str, version: str) -> str:
     )
 
 
-def extract_team_id() -> str:
-    """Extract team ID from Local Storage LevelDB."""
+def extract_team_ids() -> list[str]:
+    """Extract distinct team IDs from Local Storage LevelDB."""
     hits = _read_leveldb_strings(r"team_[A-Za-z0-9]{15,25}")
     if not hits:
         raise RuntimeError("Could not find team_id in Superhuman Local Storage")
-    # Deduplicate and return the most common
-    from collections import Counter
-    return Counter(hits).most_common(1)[0][0]
+    return sorted(set(hits))
+
+
+def extract_team_id() -> str:
+    """Extract team ID from Local Storage LevelDB.
+
+    We only accept a single distinct team id. If multiple are present,
+    setup cannot safely map the selected mailbox to the right team.
+    """
+    team_ids = extract_team_ids()
+    if len(team_ids) == 1:
+        return team_ids[0]
+    raise RuntimeError(
+        "Multiple Superhuman team IDs detected. "
+        "Setup cannot safely map the selected account to the right team. "
+        f"Found: {', '.join(team_ids)}"
+    )
 
 
 def derive_shard_key(team_id: str) -> str:
@@ -259,11 +271,16 @@ def _db_owner_email(entry: Path) -> str | None:
 
 
 def extract_accounts() -> list[dict[str, str]]:
-    """Discover configured Superhuman accounts from local wrapped SQLite DB files."""
+    """Discover configured Superhuman accounts from local wrapped SQLite DB files.
+
+    If multiple DB files map to the same email, that account is omitted here
+    because the mapping is ambiguous. The selected primary account is added
+    separately by ``run_setup()`` after ``extract_db_file(email)`` resolves it.
+    """
     if not _FS_DIR.exists():
         raise RuntimeError(f"Superhuman File System directory not found: {_FS_DIR}")
 
-    accounts: dict[str, dict[str, str]] = {}
+    matches: dict[str, list[dict[str, str]]] = {}
     for entry in sorted(_FS_DIR.iterdir()):
         if not entry.is_file():
             continue
@@ -273,10 +290,16 @@ def extract_accounts() -> list[dict[str, str]]:
         if header != b"SQLite":
             continue
         email = _db_owner_email(entry)
-        if email and email.lower() not in accounts:
-            accounts[email.lower()] = {"email": email, "db_file": entry.name}
+        if not email:
+            continue
+        matches.setdefault(email.lower(), []).append({"email": email, "db_file": entry.name})
 
-    return [accounts[key] for key in sorted(accounts)]
+    accounts: list[dict[str, str]] = []
+    for key in sorted(matches):
+        entries = matches[key]
+        if len(entries) == 1:
+            accounts.append(entries[0])
+    return accounts
 
 
 def extract_db_file(email: str | None = None) -> str:
