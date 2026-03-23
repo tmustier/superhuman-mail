@@ -147,7 +147,7 @@ def derive_shard_key(team_id: str) -> str:
 
 _VERSION_TS_RE = re.compile(r"20\d{2}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
 _ANCHORED_VERSION_RE = re.compile(
-    r"lastCodeVersion.{0,32}?(20\d{2}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)"
+    r"lastCodeVersion[\s\S]{0,32}?(20\d{2}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)"
 )
 
 
