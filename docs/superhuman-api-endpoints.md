@@ -87,7 +87,14 @@ For attachment writes, the validated path is:
 
 - `threads/<threadId>/messages/<draftId>/attachments/<uuid>`
 
-What we have **not** validated yet is the full shape for every advanced draft feature (for example: `drafts.unshare`, smart-send-specific metadata, or every edge case of sending from our own client).
+On 2026-03-23 we validated:
+
+- `drafts.unshare` via `POST /~backend/v3/drafts.unshare`
+  - request: `{"path": "users/<googleId>/threads/<threadId>/messages/<draftId>"}`
+  - effect: the `sharing` object gains an `unsharedAt` timestamp; the draft itself is preserved
+  - the share link becomes inactive
+
+What we have **not** validated yet is the full shape for every advanced draft feature (for example: smart-send-specific metadata, forward quoted content generation, or every edge case of sending from our own client).
 
 ## What we have already validated in this repo
 

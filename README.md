@@ -10,7 +10,7 @@ This is **not** an official SDK. It uses Superhuman's private API, reverse-engin
 - **Comments**: post, read, and discard thread comments
 - **Attachments**: upload files to drafts
 - **Send**: send drafts (with a mandatory safety gate)
-- **Share/Unshare**: draft collaboration links
+- **Share/Unshare**: draft collaboration links (both validated)
 - **Thread reads**: read messages from the local Superhuman DB
 
 ## Install
