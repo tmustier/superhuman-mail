@@ -29,6 +29,10 @@ class _ThreadOps:
         """Read messages from local DB."""
         return _thread.messages(thread_id, account)
 
+    def read(self, thread_id: str, account: str | None = None) -> dict[str, Any]:
+        """Backward-compatible alias for messages()."""
+        return self.messages(thread_id, account)
+
     def userdata(self, thread_id: str) -> dict[str, Any]:
         """Read thread userdata from API."""
         return _thread.userdata(thread_id)
@@ -122,6 +126,18 @@ class _SendOps:
         return _send.execute(thread_id, draft_id, **kwargs)
 
 
+class _ShareOps:
+    """Backward-compatible share/unshare wrapper."""
+
+    def share(self, thread_id: str, draft_id: str, **kwargs: Any) -> dict[str, Any]:
+        """Share a draft."""
+        return _share.share(thread_id, draft_id, **kwargs)
+
+    def unshare(self, thread_id: str, draft_id: str) -> dict[str, Any]:
+        """Unshare a draft."""
+        return _share.unshare(thread_id, draft_id)
+
+
 class Client:
     """Superhuman Mail API client.
 
@@ -139,3 +155,4 @@ class Client:
         self.draft = _DraftOps()
         self.comment = _CommentOps()
         self.send = _SendOps()
+        self.share = _ShareOps()

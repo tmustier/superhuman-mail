@@ -512,12 +512,14 @@ def recent_opens(
             superhuman_data = json.loads(row[5]) if row[5] else {}
 
             messages = list(raw.get("messages", []) or [])
-            last = messages[-1] if messages else {}
-            from_info = last.get("from") or {}
-            subject = str(last.get("subject", ""))
+            message = next((m for m in messages if str(m.get("id", "")) == message_id), None)
+            if message is None:
+                message = messages[-1] if messages else {}
+            from_info = message.get("from") or {}
+            subject = str(message.get("subject", ""))
             if not subject and messages:
                 subject = str(messages[0].get("subject", ""))
-            snippet = _clean_snippet(str(last.get("snippet", "")))
+            snippet = _clean_snippet(str(message.get("snippet", "")))
 
             device = None
             try:
