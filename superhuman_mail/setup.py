@@ -149,6 +149,8 @@ def extract_google_ids() -> list[str]:
 def extract_google_id(email: str, device_id: str, version: str) -> str:
     """Select the Google account ID that matches the chosen email account."""
     candidates = extract_google_ids()
+    if len(candidates) == 1:
+        return candidates[0]
 
     matches: list[str] = []
     for google_id in candidates:
@@ -182,16 +184,22 @@ def extract_team_ids() -> list[str]:
 def extract_team_id() -> str:
     """Extract team ID from Local Storage LevelDB.
 
-    We only accept a single distinct team id. If multiple are present,
-    setup cannot safely map the selected mailbox to the right team.
+    LevelDB logs can contain stale historical values, so prefer the most
+    common team id when there is a clear winner. Only fail on a true tie.
     """
-    team_ids = extract_team_ids()
-    if len(team_ids) == 1:
-        return team_ids[0]
+    hits = _read_leveldb_strings(r"team_[A-Za-z0-9]{15,25}")
+    if not hits:
+        raise RuntimeError("Could not find team_id in Superhuman Local Storage")
+
+    from collections import Counter
+
+    counts = Counter(hits).most_common()
+    if len(counts) == 1 or counts[0][1] > counts[1][1]:
+        return counts[0][0]
     raise RuntimeError(
-        "Multiple Superhuman team IDs detected. "
-        "Setup cannot safely map the selected account to the right team. "
-        f"Found: {', '.join(team_ids)}"
+        "Multiple Superhuman team IDs detected with equal confidence. "
+        "Setup cannot safely choose the right team. "
+        f"Found: {', '.join(sorted({team_id for team_id, _count in counts}))}"
     )
 
 
@@ -270,6 +278,14 @@ def _db_owner_email(entry: Path) -> str | None:
             pass
 
 
+def _best_db_candidate(candidates: list[tuple[Path, str | None]]) -> tuple[Path, str | None]:
+    """Pick the most likely active wrapped SQLite snapshot."""
+    return max(
+        candidates,
+        key=lambda item: (item[0].stat().st_mtime_ns, item[0].name),
+    )
+
+
 def extract_accounts() -> list[dict[str, str]]:
     """Discover configured Superhuman accounts from local wrapped SQLite DB files.
 
@@ -335,13 +351,11 @@ def extract_db_file(email: str | None = None) -> str:
 
     if email:
         target = email.lower()
-        matches = [entry.name for entry, owner in candidates if owner and owner.lower() == target]
+        matches = [(entry, owner) for entry, owner in candidates if owner and owner.lower() == target]
         if len(matches) == 1:
-            return matches[0]
+            return matches[0][0].name
         if len(matches) > 1:
-            raise RuntimeError(
-                f"Multiple SQLite DB files matched {email}: {', '.join(matches)}"
-            )
+            return _best_db_candidate(matches)[0].name
         details = [f"{entry.name} ({owner})" if owner else entry.name for entry, owner in candidates]
         raise RuntimeError(
             f"Multiple SQLite DB files detected, but none matched {email}. "

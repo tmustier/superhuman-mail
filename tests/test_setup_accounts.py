@@ -84,6 +84,17 @@ class TestExtractDbFile:
         with patch("superhuman_mail.setup._FS_DIR", tmp_path):
             assert extract_db_file("two@example.com") == "00000002"
 
+    def test_selected_email_picks_newest_matching_snapshot(self, tmp_path):
+        older = tmp_path / "00000001"
+        newer = tmp_path / "00000002"
+        _write_wrapped_db(tmp_path, older.name, "two@example.com")
+        _write_wrapped_db(tmp_path, newer.name, "two@example.com")
+        older.touch()
+        newer.touch()
+
+        with patch("superhuman_mail.setup._FS_DIR", tmp_path):
+            assert extract_db_file("two@example.com") == "00000002"
+
     def test_single_db_file_with_mismatched_owner_raises(self, tmp_path):
         _write_wrapped_db(tmp_path, "00000001", "one@example.com")
 
@@ -123,11 +134,11 @@ class TestExtractGoogleId:
             with patch("superhuman_mail.setup._request_auth_data", side_effect=fake_request):
                 assert extract_google_id("two@example.com", "device-1", "2026-03-23T00:00:00Z") == "2222222222"
 
-    def test_single_google_id_is_still_validated(self):
+    def test_single_google_id_is_used_without_remote_validation(self):
         with patch("superhuman_mail.setup.extract_google_ids", return_value=["1111111111"]):
-            with patch("superhuman_mail.setup._request_auth_data", side_effect=RuntimeError("wrong account")):
-                with pytest.raises(RuntimeError, match="none matched"):
-                    extract_google_id("missing@example.com", "device-1", "2026-03-23T00:00:00Z")
+            with patch("superhuman_mail.setup._request_auth_data") as request_auth_data:
+                assert extract_google_id("missing@example.com", "device-1", "2026-03-23T00:00:00Z") == "1111111111"
+        request_auth_data.assert_not_called()
 
     def test_raises_when_no_google_id_matches_email(self):
         with patch("superhuman_mail.setup.extract_google_ids", return_value=["1111111111", "2222222222"]):
@@ -141,7 +152,18 @@ class TestExtractTeamId:
         with patch("superhuman_mail.setup._read_leveldb_strings", return_value=["team_abc123456789012", "team_abc123456789012"]):
             assert extract_team_id() == "team_abc123456789012"
 
-    def test_multiple_team_ids_raise(self):
+    def test_most_common_team_id_wins(self):
+        with patch(
+            "superhuman_mail.setup._read_leveldb_strings",
+            return_value=[
+                "team_abc123456789012",
+                "team_abc123456789012",
+                "team_def123456789012",
+            ],
+        ):
+            assert extract_team_id() == "team_abc123456789012"
+
+    def test_tied_team_ids_raise(self):
         with patch("superhuman_mail.setup._read_leveldb_strings", return_value=["team_abc123456789012", "team_def123456789012"]):
-            with pytest.raises(RuntimeError, match="Multiple Superhuman team IDs detected"):
+            with pytest.raises(RuntimeError, match="equal confidence"):
                 extract_team_id()
