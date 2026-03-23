@@ -85,16 +85,26 @@ Rules:
 ### Draft commands
 
 ```bash
-shm draft reply <thread_id> --body "..." [--body-html html] [--scheduled-for iso]
-shm draft reply-all <thread_id> --body "..." [--body-html html] [--scheduled-for iso]
-shm draft forward <thread_id> --body "..." [--to email ...] [--cc email ...] [--bcc email ...] [--body-html html] [--scheduled-for iso]
-shm draft compose --subject "..." --body "..." [--to email ...] [--cc email ...] [--bcc email ...] [--body-html html] [--scheduled-for iso]
+shm draft reply <thread_id> --body "..." [--body-html html] [smart-send flags]
+shm draft reply-all <thread_id> --body "..." [--body-html html] [smart-send flags]
+shm draft forward <thread_id> --body "..." [--to email ...] [--cc email ...] [--bcc email ...] [--body-html html] [smart-send flags]
+shm draft compose --subject "..." --body "..." [--to email ...] [--cc email ...] [--bcc email ...] [--body-html html] [smart-send flags]
 shm draft read <thread_id> [--draft-id id]
 shm draft discard <thread_id> <draft_id>
 shm draft attach <thread_id> <draft_id> <file> [--content-type mime]
 shm draft share <thread_id> <draft_id> [--name name]
 shm draft unshare <thread_id> <draft_id>
 ```
+
+**Smart-send flags** (available on reply, reply-all, forward, compose):
+
+| Flag | Purpose |
+|---|---|
+| `--scheduled-for <iso>` | Schedule send for a future time (ISO datetime) |
+| `--abort-on-reply` | Cancel scheduled send if someone replies first |
+| `--reminder <iso>` | Set a follow-up reminder (ISO datetime) |
+| `--sensitivity-label-id <id>` | Microsoft sensitivity label |
+| `--sensitivity-tenant-id <id>` | Microsoft sensitivity tenant |
 
 ### Comment commands
 
@@ -154,7 +164,29 @@ shm opens --recent --limit 10
 shm opens --recent --recipient someone@example.com
 ```
 
-### 3. Share a draft for team review
+### 3. Schedule a follow-up with attachment
+
+This is a multi-step flow — create the draft first to get the draft_id, then attach:
+
+```bash
+# 1. Create a scheduled reply
+shm draft reply <thread_id> --body "As discussed, see attached." --scheduled-for "2026-03-26T09:00:00Z"
+# → note the draft_id from the response
+
+# 2. Attach file(s)
+shm draft attach <thread_id> <draft_id> ./proposal.pdf --content-type application/pdf
+
+# 3. Verify
+shm send --dry-run <thread_id> <draft_id>
+```
+
+To cancel the send if someone replies before the scheduled time, add `--abort-on-reply`:
+
+```bash
+shm draft reply <thread_id> --body "Following up..." --scheduled-for "2026-03-26T09:00:00Z" --abort-on-reply
+```
+
+### 4. Share a draft for team review
 
 ```bash
 shm draft reply <thread_id> --body "..."
@@ -163,7 +195,7 @@ shm draft share <thread_id> <draft_id>
 
 Use `draft unshare` to revoke it later.
 
-### 4. Read raw thread metadata only when needed
+### 5. Read raw thread metadata only when needed
 
 Prefer the specialized commands first:
 - `thread messages`
