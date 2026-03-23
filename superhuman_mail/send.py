@@ -124,8 +124,11 @@ def _build_outgoing(draft: dict[str, Any], sid: str | None = None) -> dict[str, 
     for key, val in {
         "scheduled_for": draft.get("scheduledFor"),
         "abort_on_reply": draft.get("abortOnReply"),
+        "reminder": draft.get("reminder"),
+        "sensitivity_label_id": draft.get("sensitivityLabelId"),
+        "sensitivity_tenant_id": draft.get("sensitivityTenantId"),
     }.items():
-        if val not in (None, [], ""):
+        if val not in (None, [], "", False):
             payload[key] = val
 
     return payload

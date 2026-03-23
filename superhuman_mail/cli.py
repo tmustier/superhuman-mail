@@ -96,6 +96,10 @@ SCHEMA: dict[str, dict[str, Any]] = {
             "--body": {"required": True, "type": "string"},
             "--body-html": {"required": False, "type": "string"},
             "--scheduled-for": {"required": False, "type": "string", "hint": "ISO datetime"},
+            "--abort-on-reply": {"required": False, "type": "flag", "hint": "Cancel send if someone replies first"},
+            "--reminder": {"required": False, "type": "string", "hint": "Follow-up reminder (ISO datetime)"},
+            "--sensitivity-label-id": {"required": False, "type": "string"},
+            "--sensitivity-tenant-id": {"required": False, "type": "string"},
         },
         "safety": "write",
         "example": "shm draft reply 19d001f35612a211 --body 'Thanks for the update'",
@@ -107,6 +111,10 @@ SCHEMA: dict[str, dict[str, Any]] = {
             "--body": {"required": True, "type": "string"},
             "--body-html": {"required": False, "type": "string"},
             "--scheduled-for": {"required": False, "type": "string"},
+            "--abort-on-reply": {"required": False, "type": "flag", "hint": "Cancel send if someone replies first"},
+            "--reminder": {"required": False, "type": "string", "hint": "Follow-up reminder (ISO datetime)"},
+            "--sensitivity-label-id": {"required": False, "type": "string"},
+            "--sensitivity-tenant-id": {"required": False, "type": "string"},
         },
         "safety": "write",
         "example": "shm draft reply-all 19d001f35612a211 --body 'Sounds good to everyone'",
@@ -121,6 +129,10 @@ SCHEMA: dict[str, dict[str, Any]] = {
             "--bcc": {"required": False, "type": "string[]"},
             "--body-html": {"required": False, "type": "string"},
             "--scheduled-for": {"required": False, "type": "string"},
+            "--abort-on-reply": {"required": False, "type": "flag", "hint": "Cancel send if someone replies first"},
+            "--reminder": {"required": False, "type": "string", "hint": "Follow-up reminder (ISO datetime)"},
+            "--sensitivity-label-id": {"required": False, "type": "string"},
+            "--sensitivity-tenant-id": {"required": False, "type": "string"},
         },
         "safety": "write",
         "example": "shm draft forward 19d001f35612a211 --body 'FYI — see below' --to someone@example.com",
@@ -135,6 +147,10 @@ SCHEMA: dict[str, dict[str, Any]] = {
             "--bcc": {"required": False, "type": "string[]"},
             "--body-html": {"required": False, "type": "string"},
             "--scheduled-for": {"required": False, "type": "string"},
+            "--abort-on-reply": {"required": False, "type": "flag", "hint": "Cancel send if someone replies first"},
+            "--reminder": {"required": False, "type": "string", "hint": "Follow-up reminder (ISO datetime)"},
+            "--sensitivity-label-id": {"required": False, "type": "string"},
+            "--sensitivity-tenant-id": {"required": False, "type": "string"},
         },
         "safety": "write",
         "example": "shm draft compose --subject 'Hello' --body 'Hi there' --to someone@example.com",
@@ -343,17 +359,24 @@ def _build_parser() -> argparse.ArgumentParser:
     draft_p = sub.add_parser("draft", help="Draft operations")
     dsub = draft_p.add_subparsers(dest="action")
 
+    def _add_smart_send_args(parser: argparse.ArgumentParser) -> None:
+        parser.add_argument("--scheduled-for", help="ISO datetime for scheduled send")
+        parser.add_argument("--abort-on-reply", action="store_true", help="Cancel send if someone replies first")
+        parser.add_argument("--reminder", help="Follow-up reminder (ISO datetime)")
+        parser.add_argument("--sensitivity-label-id", help="Sensitivity label ID")
+        parser.add_argument("--sensitivity-tenant-id", help="Sensitivity tenant ID")
+
     d_reply = dsub.add_parser("reply", help="Create reply draft")
     d_reply.add_argument("thread_id")
     d_reply.add_argument("--body", required=True)
     d_reply.add_argument("--body-html")
-    d_reply.add_argument("--scheduled-for")
+    _add_smart_send_args(d_reply)
 
     d_ra = dsub.add_parser("reply-all", help="Create reply-all draft")
     d_ra.add_argument("thread_id")
     d_ra.add_argument("--body", required=True)
     d_ra.add_argument("--body-html")
-    d_ra.add_argument("--scheduled-for")
+    _add_smart_send_args(d_ra)
 
     d_fwd = dsub.add_parser("forward", help="Create forward draft")
     d_fwd.add_argument("thread_id")
@@ -362,7 +385,7 @@ def _build_parser() -> argparse.ArgumentParser:
     d_fwd.add_argument("--cc", action="append", default=[])
     d_fwd.add_argument("--bcc", action="append", default=[])
     d_fwd.add_argument("--body-html")
-    d_fwd.add_argument("--scheduled-for")
+    _add_smart_send_args(d_fwd)
 
     d_compose = dsub.add_parser("compose", help="Create new compose draft")
     d_compose.add_argument("--subject", required=True)
@@ -371,7 +394,7 @@ def _build_parser() -> argparse.ArgumentParser:
     d_compose.add_argument("--cc", action="append", default=[])
     d_compose.add_argument("--bcc", action="append", default=[])
     d_compose.add_argument("--body-html")
-    d_compose.add_argument("--scheduled-for")
+    _add_smart_send_args(d_compose)
 
     d_read = dsub.add_parser("read", help="Read draft(s)")
     d_read.add_argument("thread_id")
@@ -480,16 +503,23 @@ def main(argv: list[str] | None = None) -> int:
 
     # -- draft --
     elif args.command == "draft":
+        ss = {
+            "scheduled_for": getattr(args, "scheduled_for", None),
+            "abort_on_reply": getattr(args, "abort_on_reply", False),
+            "reminder": getattr(args, "reminder", None),
+            "sensitivity_label_id": getattr(args, "sensitivity_label_id", None),
+            "sensitivity_tenant_id": getattr(args, "sensitivity_tenant_id", None),
+        }
         if not hasattr(args, "action") or not args.action:
             return emit(fail("draft", [error("input", "MISSING_ACTION", False, "Use: shm draft reply|reply-all|forward|compose|read|discard|attach|share|unshare")]))
         elif args.action == "reply":
-            return emit(_draft.create_reply(args.thread_id, args.body, body_html=args.body_html, scheduled_for=args.scheduled_for))
+            return emit(_draft.create_reply(args.thread_id, args.body, body_html=args.body_html, **ss))
         elif args.action == "reply-all":
-            return emit(_draft.create_reply(args.thread_id, args.body, reply_all=True, body_html=args.body_html, scheduled_for=args.scheduled_for))
+            return emit(_draft.create_reply(args.thread_id, args.body, reply_all=True, body_html=args.body_html, **ss))
         elif args.action == "forward":
-            return emit(_draft.create_forward(args.thread_id, args.body, to=args.to, cc=args.cc, bcc=args.bcc, body_html=args.body_html, scheduled_for=args.scheduled_for))
+            return emit(_draft.create_forward(args.thread_id, args.body, to=args.to, cc=args.cc, bcc=args.bcc, body_html=args.body_html, **ss))
         elif args.action == "compose":
-            return emit(_draft.create_compose(args.subject, args.body, to=args.to, cc=args.cc, bcc=args.bcc, body_html=args.body_html, scheduled_for=args.scheduled_for))
+            return emit(_draft.create_compose(args.subject, args.body, to=args.to, cc=args.cc, bcc=args.bcc, body_html=args.body_html, **ss))
         elif args.action == "read":
             return emit(_draft.read(args.thread_id, draft_id=args.draft_id))
         elif args.action == "discard":
