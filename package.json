@@ -5,6 +5,6 @@
   "keywords": ["pi-package"],
   "license": "MIT",
   "pi": {
-    "skills": ["./skills"]
+    "skills": ["."]
   }
 }
