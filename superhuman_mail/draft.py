@@ -173,12 +173,13 @@ def _thread_has_external(messages: list[dict[str, Any]], domain: str) -> bool:
     return False
 
 
-def _find_reply_message(messages: list[dict[str, Any]]) -> dict[str, Any]:
-    """Walk messages backwards to find the right message for reply targeting.
+def _find_reply_message(messages: list[dict[str, Any]], me: str | None = None) -> dict[str, Any]:
+    """Walk messages backwards to find the right message for reply recipient targeting.
 
     Skips:
     1. Superhuman system messages (*@superhuman.com)
     2. Internal-only messages in threads that have external participants
+    3. Self-sent messages (prefer replying to someone else's message)
 
     Falls back to the last non-system message, then the raw last message.
     """
@@ -187,6 +188,7 @@ def _find_reply_message(messages: list[dict[str, Any]]) -> dict[str, Any]:
 
     domain = _internal_domain()
     has_external = domain and _thread_has_external(messages, domain)
+    me_lower = (me or "").lower().strip()
 
     last_non_system: dict[str, Any] | None = None
     for msg in reversed(messages):
@@ -194,8 +196,12 @@ def _find_reply_message(messages: list[dict[str, Any]]) -> dict[str, Any]:
             continue
         if last_non_system is None:
             last_non_system = msg
-        # In external threads, also skip internal-only messages
+        # In external threads, skip internal-only messages
         if has_external and domain and _is_internal_only(msg, domain):
+            continue
+        # Prefer messages from someone else
+        sender = str((msg.get("from") or {}).get("email", "")).strip().lower()
+        if me_lower and sender == me_lower:
             continue
         return msg
 
@@ -321,9 +327,10 @@ def create_reply(
         if not messages:
             raise RuntimeError(f"Thread has no messages: {thread_id}")
 
-        last = _find_reply_message(messages)
+        last = messages[-1]  # Threading metadata: always the actual last message
         from_contact = _default_from()
-        to_list, cc_list = _reply_targets(last, reply_all, from_contact["email"])
+        reply_msg = _find_reply_message(messages, me=from_contact["email"])
+        to_list, cc_list = _reply_targets(reply_msg, reply_all, from_contact["email"])
         did = _draft_id()
         now_ms = int(time.time() * 1000)
 
