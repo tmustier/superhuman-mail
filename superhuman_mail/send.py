@@ -124,8 +124,11 @@ def _build_outgoing(draft: dict[str, Any], sid: str | None = None) -> dict[str, 
     for key, val in {
         "scheduled_for": draft.get("scheduledFor"),
         "abort_on_reply": draft.get("abortOnReply"),
+        "reminder": draft.get("reminder"),
+        "sensitivity_label_id": draft.get("sensitivityLabelId"),
+        "sensitivity_tenant_id": draft.get("sensitivityTenantId"),
     }.items():
-        if val not in (None, [], ""):
+        if val not in (None, [], "", False):
             payload[key] = val
 
     return payload
@@ -169,7 +172,7 @@ def validate(thread_id: str, draft_id: str) -> dict[str, Any]:
 
         outgoing = _build_outgoing(draft)
 
-        return ok("send.validate", {
+        result: dict[str, Any] = {
             "thread_id": thread_id,
             "draft_id": draft_id,
             "sendable": len(warnings) == 0 or bool(to_list),
@@ -180,8 +183,19 @@ def validate(thread_id: str, draft_id: str) -> dict[str, Any]:
             "subject": outgoing.get("subject"),
             "body_preview": (draft.get("snippet") or "")[:200],
             "has_attachments": bool(outgoing.get("attachments")),
-            "scheduled_for": draft.get("scheduledFor"),
-        }, warnings=warnings)
+        }
+        # Include smart-send fields when set
+        for draft_key, result_key in {
+            "scheduledFor": "scheduled_for",
+            "abortOnReply": "abort_on_reply",
+            "reminder": "reminder",
+            "sensitivityLabelId": "sensitivity_label_id",
+            "sensitivityTenantId": "sensitivity_tenant_id",
+        }.items():
+            val = draft.get(draft_key)
+            if val not in (None, [], "", False):
+                result[result_key] = val
+        return ok("send.validate", result, warnings=warnings)
     except Exception as e:
         return fail("send.validate", [classify_exception(e)])
 

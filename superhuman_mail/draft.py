@@ -307,6 +307,33 @@ def _write_draft(draft: dict[str, Any], command: str = "draft.create") -> dict[s
 
 
 # ---------------------------------------------------------------------------
+# Smart-send field helpers
+# ---------------------------------------------------------------------------
+
+
+def _apply_smart_send(
+    draft: dict[str, Any],
+    *,
+    scheduled_for: str | None = None,
+    abort_on_reply: bool = False,
+    reminder: str | None = None,
+    sensitivity_label_id: str | None = None,
+    sensitivity_tenant_id: str | None = None,
+) -> None:
+    """Set optional smart-send fields on a draft dict (mutates in place)."""
+    if scheduled_for:
+        draft["scheduledFor"] = scheduled_for
+    if abort_on_reply:
+        draft["abortOnReply"] = True
+    if reminder:
+        draft["reminder"] = reminder
+    if sensitivity_label_id:
+        draft["sensitivityLabelId"] = sensitivity_label_id
+    if sensitivity_tenant_id:
+        draft["sensitivityTenantId"] = sensitivity_tenant_id
+
+
+# ---------------------------------------------------------------------------
 # Public API — draft creation
 # ---------------------------------------------------------------------------
 
@@ -318,6 +345,10 @@ def create_reply(
     body_html: str | None = None,
     reply_all: bool = False,
     scheduled_for: str | None = None,
+    abort_on_reply: bool = False,
+    reminder: str | None = None,
+    sensitivity_label_id: str | None = None,
+    sensitivity_tenant_id: str | None = None,
     account: str | None = None,
 ) -> dict[str, Any]:
     """Create a reply or reply-all draft on an existing thread."""
@@ -361,8 +392,14 @@ def create_reply(
             "totalComposeSeconds": 0,
             "timeZone": _config.timezone(),
         }
-        if scheduled_for:
-            draft["scheduledFor"] = scheduled_for
+        _apply_smart_send(
+            draft,
+            scheduled_for=scheduled_for,
+            abort_on_reply=abort_on_reply,
+            reminder=reminder,
+            sensitivity_label_id=sensitivity_label_id,
+            sensitivity_tenant_id=sensitivity_tenant_id,
+        )
         command = "draft.reply-all" if reply_all else "draft.reply"
         return _write_draft(draft, command)
     except Exception as e:
@@ -379,6 +416,10 @@ def create_forward(
     bcc: list[Any] | None = None,
     body_html: str | None = None,
     scheduled_for: str | None = None,
+    abort_on_reply: bool = False,
+    reminder: str | None = None,
+    sensitivity_label_id: str | None = None,
+    sensitivity_tenant_id: str | None = None,
     account: str | None = None,
 ) -> dict[str, Any]:
     """Create a forward draft on an existing thread."""
@@ -422,8 +463,14 @@ def create_forward(
             "totalComposeSeconds": 0,
             "timeZone": _config.timezone(),
         }
-        if scheduled_for:
-            draft["scheduledFor"] = scheduled_for
+        _apply_smart_send(
+            draft,
+            scheduled_for=scheduled_for,
+            abort_on_reply=abort_on_reply,
+            reminder=reminder,
+            sensitivity_label_id=sensitivity_label_id,
+            sensitivity_tenant_id=sensitivity_tenant_id,
+        )
         return _write_draft(draft, "draft.forward")
     except Exception as e:
         return fail("draft.forward", [classify_exception(e)])
@@ -438,6 +485,10 @@ def create_compose(
     bcc: list[Any] | None = None,
     body_html: str | None = None,
     scheduled_for: str | None = None,
+    abort_on_reply: bool = False,
+    reminder: str | None = None,
+    sensitivity_label_id: str | None = None,
+    sensitivity_tenant_id: str | None = None,
 ) -> dict[str, Any]:
     """Create a new compose draft (new thread)."""
     try:
@@ -473,8 +524,14 @@ def create_compose(
             "totalComposeSeconds": 0,
             "timeZone": _config.timezone(),
         }
-        if scheduled_for:
-            draft["scheduledFor"] = scheduled_for
+        _apply_smart_send(
+            draft,
+            scheduled_for=scheduled_for,
+            abort_on_reply=abort_on_reply,
+            reminder=reminder,
+            sensitivity_label_id=sensitivity_label_id,
+            sensitivity_tenant_id=sensitivity_tenant_id,
+        )
         return _write_draft(draft, "draft.compose")
     except Exception as e:
         return fail("draft.compose", [classify_exception(e)])
