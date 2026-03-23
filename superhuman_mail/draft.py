@@ -120,6 +120,90 @@ def _reply_targets(last: dict[str, Any], reply_all: bool, me: str) -> tuple[list
 
 
 # ---------------------------------------------------------------------------
+# Reply-message resolution — skip system & internal-only messages
+# ---------------------------------------------------------------------------
+
+_SYSTEM_DOMAIN = "superhuman.com"
+
+
+def _is_system_sender(msg: dict[str, Any]) -> bool:
+    """True if the message sender is a Superhuman system address."""
+    email = str((msg.get("from") or {}).get("email", "")).strip().lower()
+    return email.endswith(f"@{_SYSTEM_DOMAIN}")
+
+
+def _internal_domain() -> str | None:
+    """Derive the internal email domain from the configured account email."""
+    try:
+        email = _config.api("email")
+        _, domain = email.rsplit("@", 1)
+        return domain.lower()
+    except Exception:
+        return None
+
+
+def _msg_participants(msg: dict[str, Any]) -> list[str]:
+    """Collect all participant emails (from + to + cc) from a raw message."""
+    emails: list[str] = []
+    sender = (msg.get("from") or {}).get("email", "")
+    if sender:
+        emails.append(str(sender).strip().lower())
+    for field in ("to", "cc"):
+        for entry in list(msg.get(field, []) or []):
+            email = str((entry if isinstance(entry, dict) else {}).get("email", "")).strip().lower()
+            if email:
+                emails.append(email)
+    return emails
+
+
+def _is_internal_only(msg: dict[str, Any], domain: str) -> bool:
+    """True if every participant on this message is on the internal domain."""
+    participants = _msg_participants(msg)
+    return bool(participants) and all(p.endswith(f"@{domain}") for p in participants)
+
+
+def _thread_has_external(messages: list[dict[str, Any]], domain: str) -> bool:
+    """True if any non-system message in the thread has an external participant."""
+    for msg in messages:
+        if _is_system_sender(msg):
+            continue
+        for email in _msg_participants(msg):
+            if not email.endswith(f"@{domain}") and not email.endswith(f"@{_SYSTEM_DOMAIN}"):
+                return True
+    return False
+
+
+def _find_reply_message(messages: list[dict[str, Any]]) -> dict[str, Any]:
+    """Walk messages backwards to find the right message for reply targeting.
+
+    Skips:
+    1. Superhuman system messages (*@superhuman.com)
+    2. Internal-only messages in threads that have external participants
+
+    Falls back to the last non-system message, then the raw last message.
+    """
+    if not messages:
+        raise RuntimeError("Thread has no messages")
+
+    domain = _internal_domain()
+    has_external = domain and _thread_has_external(messages, domain)
+
+    last_non_system: dict[str, Any] | None = None
+    for msg in reversed(messages):
+        if _is_system_sender(msg):
+            continue
+        if last_non_system is None:
+            last_non_system = msg
+        # In external threads, also skip internal-only messages
+        if has_external and domain and _is_internal_only(msg, domain):
+            continue
+        return msg
+
+    # Fall back to last non-system message, then raw last
+    return last_non_system or messages[-1]
+
+
+# ---------------------------------------------------------------------------
 # Formatting helpers
 # ---------------------------------------------------------------------------
 
@@ -237,7 +321,7 @@ def create_reply(
         if not messages:
             raise RuntimeError(f"Thread has no messages: {thread_id}")
 
-        last = messages[-1]
+        last = _find_reply_message(messages)
         from_contact = _default_from()
         to_list, cc_list = _reply_targets(last, reply_all, from_contact["email"])
         did = _draft_id()
