@@ -145,13 +145,39 @@ def derive_shard_key(team_id: str) -> str:
     return raw[7:11]
 
 
+_VERSION_TS_RE = re.compile(r"20\d{2}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
+_ANCHORED_VERSION_RE = re.compile(
+    r"lastCodeVersion[\s\S]{0,32}?(20\d{2}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)"
+)
+
+
 def extract_version() -> str:
-    """Extract the Superhuman version string from Local Storage LevelDB."""
-    hits = _read_leveldb_strings(r"20\d{2}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
-    if not hits:
-        raise RuntimeError("Could not find version timestamp in Superhuman Local Storage")
-    # Return the latest version string
-    return sorted(set(hits))[-1]
+    """Extract the Superhuman version string from Local Storage LevelDB.
+
+    Looks for the ``lastCodeVersion`` key and extracts the timestamp that
+    follows it.  Falls back to the lexicographically latest UTC timestamp
+    if the key isn't found (original behaviour).
+    """
+    if not _LEVELDB_DIR.exists():
+        raise RuntimeError("Superhuman Local Storage not found")
+
+    anchored: list[str] = []
+    unanchored: list[str] = []
+
+    for f in sorted(_LEVELDB_DIR.iterdir()):
+        if f.suffix not in (".ldb", ".log"):
+            continue
+        data = f.read_bytes().decode("latin-1")
+        for m in _ANCHORED_VERSION_RE.finditer(data):
+            anchored.append(m.group(1))
+        for m in _VERSION_TS_RE.finditer(data):
+            unanchored.append(m.group())
+
+    if anchored:
+        return sorted(set(anchored))[-1]
+    if unanchored:
+        return sorted(set(unanchored))[-1]
+    raise RuntimeError("Could not find version timestamp in Superhuman Local Storage")
 
 
 def extract_db_file() -> str:
