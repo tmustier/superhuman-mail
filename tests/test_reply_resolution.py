@@ -5,9 +5,11 @@ from unittest.mock import patch
 
 from superhuman_mail.draft import (
     _find_reply_message,
+    _find_threading_message,
     _is_internal_only,
     _is_system_sender,
     _msg_participants,
+    _reply_targets,
     _thread_has_external,
 )
 
@@ -111,16 +113,36 @@ class TestThreadHasExternal:
 
 
 # ---------------------------------------------------------------------------
-# _find_reply_message
+# _reply_targets / _find_reply_message
 # ---------------------------------------------------------------------------
 
 ME = "me@acme.com"
+
+
+class TestReplyTargets:
+    def test_follow_up_on_self_sent_message_uses_original_recipients(self):
+        msg = _msg(ME, to=["eve@vendor.com"], cc=["colleague@acme.com"], id="m1")
+        to_list, cc_list = _reply_targets(msg, reply_all=True, me=ME)
+        assert [c["email"] for c in to_list] == ["eve@vendor.com"]
+        assert [c["email"] for c in cc_list] == ["colleague@acme.com"]
+
+    def test_normal_reply_uses_sender(self):
+        msg = _msg("eve@vendor.com", to=[ME], cc=["colleague@acme.com"], id="m1")
+        to_list, cc_list = _reply_targets(msg, reply_all=True, me=ME)
+        assert [c["email"] for c in to_list] == ["eve@vendor.com"]
+        assert [c["email"] for c in cc_list] == ["colleague@acme.com"]
 
 
 def _patched_find(messages, domain="acme.com", me=ME):
     """Run _find_reply_message with a mocked internal domain."""
     with patch("superhuman_mail.draft._internal_domain", return_value=domain):
         return _find_reply_message(messages, me=me)
+
+
+def _patched_threading(messages, domain="acme.com"):
+    """Run _find_threading_message with a mocked internal domain."""
+    with patch("superhuman_mail.draft._internal_domain", return_value=domain):
+        return _find_threading_message(messages)
 
 
 class TestFindReplyMessage:
@@ -202,8 +224,37 @@ class TestFindReplyMessage:
         # Should reply to vendor, not self
         assert _patched_find([m1, m2, m3])["id"] == "vendor_msg"
 
+    def test_falls_back_to_last_external_visible_self_sent_message(self):
+        """If only self-sent external + internal forward exist, use the external-visible one."""
+        m1 = _msg(ME, to=["eve@vendor.com"], id="external_self")
+        m2 = _msg(ME, to=["colleague@acme.com"], id="internal_forward")
+        assert _patched_find([m1, m2])["id"] == "external_self"
+
     def test_no_me_param_skips_only_system(self):
         """Without me param, self-sent filtering is disabled."""
         m1 = _msg("eve@vendor.com", to=[ME], id="m1")
         m2 = _msg(ME, to=["eve@vendor.com"], id="m2")
         assert _patched_find([m1, m2], me=None)["id"] == "m2"
+
+
+class TestFindThreadingMessage:
+    def test_skips_superhuman_system_message(self):
+        real = _msg("eve@vendor.com", to=[ME], id="real")
+        system = _msg("sharing@superhuman.com", to=[ME], id="system")
+        assert _patched_threading([real, system])["id"] == "real"
+
+    def test_skips_internal_only_in_external_thread_but_keeps_self_sent_external(self):
+        external_self = _msg(ME, to=["eve@vendor.com"], id="external_self")
+        internal_forward = _msg(ME, to=["colleague@acme.com"], id="internal_forward")
+        assert _patched_threading([external_self, internal_forward])["id"] == "external_self"
+
+    def test_prefers_latest_external_visible_message(self):
+        original = _msg(ME, to=["eve@vendor.com"], id="original")
+        external_reply = _msg("eve@vendor.com", to=[ME], id="external_reply")
+        share = _msg("sharing@superhuman.com", to=[ME], id="share")
+        assert _patched_threading([original, external_reply, share])["id"] == "external_reply"
+
+    def test_internal_thread_keeps_last_non_system(self):
+        m1 = _msg("alice@acme.com", to=["bob@acme.com"], id="m1")
+        m2 = _msg("bob@acme.com", to=["alice@acme.com"], id="m2")
+        assert _patched_threading([m1, m2])["id"] == "m2"
