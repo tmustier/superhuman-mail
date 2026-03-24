@@ -108,13 +108,26 @@ def _reply_targets(last: dict[str, Any], reply_all: bool, me: str) -> tuple[list
     sender = _contact_from_msg(last.get("from"))
     if not sender or not sender.get("email"):
         raise RuntimeError("Last message has no sender")
+
+    sender_email = sender.get("email", "").lower()
+    me_lower = me.lower().strip()
+
+    # If the last visible message was sent by us, this is a follow-up. Reply to the
+    # original recipients instead of replying to ourselves.
+    if sender_email == me_lower:
+        to_list = _dedupe([_contact_from_msg(entry) for entry in list(last.get("to", []) or []) if _contact_from_msg(entry)], me)
+        cc_list: list[dict[str, str]] = []
+        if reply_all:
+            cc_list = _dedupe([_contact_from_msg(entry) for entry in list(last.get("cc", []) or []) if _contact_from_msg(entry)], me)
+        return to_list, cc_list
+
     to_list: list[dict[str, str]] = [sender]
     cc_list: list[dict[str, str]] = []
     if reply_all:
         extras = []
         for entry in list(last.get("to", []) or []) + list(last.get("cc", []) or []):
             c = _contact_from_msg(entry)
-            if c and c.get("email") and c["email"].lower() != sender.get("email", "").lower():
+            if c and c.get("email") and c["email"].lower() != sender_email:
                 extras.append(c)
         cc_list = _dedupe(extras, me)
     return to_list, cc_list
@@ -192,6 +205,7 @@ def _find_reply_message(messages: list[dict[str, Any]], me: str | None = None) -
     me_lower = (me or "").lower().strip()
 
     last_non_system: dict[str, Any] | None = None
+    last_visible_non_system: dict[str, Any] | None = None
     for msg in reversed(messages):
         if _is_system_sender(msg):
             continue
@@ -200,13 +214,47 @@ def _find_reply_message(messages: list[dict[str, Any]], me: str | None = None) -
         # In external threads, skip internal-only messages
         if has_external and domain and _is_internal_only(msg, domain):
             continue
+        if last_visible_non_system is None:
+            last_visible_non_system = msg
         # Prefer messages from someone else
         sender = str((msg.get("from") or {}).get("email", "")).strip().lower()
         if me_lower and sender == me_lower:
             continue
         return msg
 
-    # Fall back to last non-system message, then raw last
+    # Fall back to the last visible non-system message, then any non-system, then raw last
+    return last_visible_non_system or last_non_system or messages[-1]
+
+
+def _find_threading_message(messages: list[dict[str, Any]]) -> dict[str, Any]:
+    """Walk messages backwards to find the right message for threading headers.
+
+    Skips:
+    1. Superhuman system messages (*@superhuman.com)
+    2. Internal-only messages in threads that have external participants
+
+    Unlike _find_reply_message, this does NOT skip self-sent messages — follow-ups
+    should still thread off your own last externally-visible message when nobody has
+    replied yet.
+
+    Falls back to the last non-system message, then the raw last message.
+    """
+    if not messages:
+        raise RuntimeError("Thread has no messages")
+
+    domain = _internal_domain()
+    has_external = domain and _thread_has_external(messages, domain)
+
+    last_non_system: dict[str, Any] | None = None
+    for msg in reversed(messages):
+        if _is_system_sender(msg):
+            continue
+        if last_non_system is None:
+            last_non_system = msg
+        if has_external and domain and _is_internal_only(msg, domain):
+            continue
+        return msg
+
     return last_non_system or messages[-1]
 
 
@@ -493,7 +541,7 @@ def create_reply(
         if not messages:
             raise RuntimeError(f"Thread has no messages: {thread_id}")
 
-        last = messages[-1]  # Threading metadata: always the actual last message
+        thread_msg = _find_threading_message(messages)
         from_contact = _default_from()
         reply_msg = _find_reply_message(messages, me=from_contact["email"])
         to_list, cc_list = _reply_targets(reply_msg, reply_all, from_contact["email"])
@@ -508,11 +556,11 @@ def create_reply(
             "to": to_list,
             "cc": cc_list,
             "bcc": [],
-            "subject": _reply_subject(str(last.get("subject", ""))),
+            "subject": _reply_subject(str(thread_msg.get("subject", ""))),
             "body": body_html or _text_to_html(body),
             "snippet": _snippet(body),
-            "inReplyTo": str(last.get("id", "")) or None,
-            "inReplyToRfc822Id": last.get("rfc822Id") or None,
+            "inReplyTo": str(thread_msg.get("id", "")) or None,
+            "inReplyToRfc822Id": thread_msg.get("rfc822Id") or None,
             "labelIds": ["DRAFT"],
             "clientCreatedAt": now_ms,
             "date": _iso_now(),
@@ -520,7 +568,7 @@ def create_reply(
             "lastSessionId": str(uuid.uuid4()),
             "quotedContent": "",
             "quotedContentInlined": False,
-            "references": [last["rfc822Id"]] if last.get("rfc822Id") else [],
+            "references": [thread_msg["rfc822Id"]] if thread_msg.get("rfc822Id") else [],
             "rfc822Id": _rfc822_id(),
             "schemaVersion": 3,
             "attachments": [],
