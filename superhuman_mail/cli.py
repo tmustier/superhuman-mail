@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from pathlib import Path
 from typing import Any
 
 from . import _auth, _config, _local
@@ -26,6 +27,10 @@ from . import share as _share
 from . import thread as _thread
 from ._envelope import emit, error, fail, ok
 
+__version__ = "0.2.1"
+
+_COMMANDS = ["thread", "opens", "draft", "comment", "send", "setup", "doctor", "schema"]
+
 # ---------------------------------------------------------------------------
 # Schema definition (for agent introspection)
 # ---------------------------------------------------------------------------
@@ -35,13 +40,17 @@ SCHEMA: dict[str, dict[str, Any]] = {
         "description": "Read thread messages from local Superhuman DB",
         "args": {"thread_id": {"required": True, "type": "string"}},
         "safety": "read",
-        "example": "shm thread messages 19d001f35612a211",
+        "examples": [
+            "shm thread messages 19d001f35612a211",
+        ],
     },
     "thread.userdata": {
         "description": "Advanced: raw thread userdata dump. Prefer draft read, comment read, or opens for specific data.",
         "args": {"thread_id": {"required": True, "type": "string"}},
         "safety": "read",
-        "example": "shm thread userdata 19d001f35612a211",
+        "examples": [
+            "shm thread userdata 19d001f35612a211",
+        ],
     },
     "thread.list": {
         "description": "List recent threads from local DB, sorted by recency",
@@ -53,7 +62,11 @@ SCHEMA: dict[str, dict[str, Any]] = {
             "--account": {"required": False, "type": "string", "hint": "Email account to use (multi-account)"},
         },
         "safety": "read",
-        "example": "shm thread list --limit 10",
+        "examples": [
+            "shm thread list --limit 10",
+            "shm thread list --unread",
+            "shm thread list --unread --participants --limit 5",
+        ],
     },
     "thread.search": {
         "description": "Search threads using the local FTS index, sorted by recency",
@@ -66,7 +79,11 @@ SCHEMA: dict[str, dict[str, Any]] = {
             "--account": {"required": False, "type": "string", "hint": "Email account to use (multi-account)"},
         },
         "safety": "read",
-        "example": "shm thread search \"kalgin follow up\"",
+        "examples": [
+            "shm thread search \"kalgin follow up\"",
+            "shm thread search \"invoice\" --limit 5 --unread",
+            "shm thread search \"proposal\" --participants --fail-empty",
+        ],
     },
     "opens": {
         "description": "Read per-message read statuses / read receipts from API",
@@ -77,7 +94,10 @@ SCHEMA: dict[str, dict[str, Any]] = {
             "--limit": {"required": False, "type": "int", "default": 20, "hint": "Max results for --recent mode"},
         },
         "safety": "read",
-        "example": "shm opens 19d001f35612a211",
+        "examples": [
+            "shm opens 19d001f35612a211",
+            "shm opens 19d001f35612a211 --recipient someone@example.com",
+        ],
     },
     "opens.recent": {
         "description": "Read recent opens across threads from the local activity_feed table",
@@ -87,14 +107,19 @@ SCHEMA: dict[str, dict[str, Any]] = {
             "--limit": {"required": False, "type": "int", "default": 20},
         },
         "safety": "read",
-        "example": "shm opens --recent --limit 10",
+        "examples": [
+            "shm opens --recent --limit 10",
+            "shm opens --recent --recipient someone@example.com",
+        ],
     },
     "draft.reply": {
         "description": "Create a reply draft on an existing thread",
         "args": {
             "thread_id": {"required": True, "type": "string"},
             "--body": {"required": True, "type": "string"},
+            "--body-file": {"required": False, "type": "filepath", "hint": "Read body from file (use instead of --body)"},
             "--body-html": {"required": False, "type": "string"},
+            "--body-html-file": {"required": False, "type": "filepath", "hint": "Read HTML body from file"},
             "--scheduled-for": {"required": False, "type": "string", "hint": "ISO datetime"},
             "--abort-on-reply": {"required": False, "type": "flag", "hint": "Cancel send if someone replies first"},
             "--reminder": {"required": False, "type": "string", "hint": "Follow-up reminder (ISO datetime)"},
@@ -102,14 +127,20 @@ SCHEMA: dict[str, dict[str, Any]] = {
             "--sensitivity-tenant-id": {"required": False, "type": "string"},
         },
         "safety": "write",
-        "example": "shm draft reply 19d001f35612a211 --body 'Thanks for the update'",
+        "examples": [
+            "shm draft reply 19d001f35612a211 --body 'Thanks for the update'",
+            "shm draft reply 19d001f35612a211 --body-file ./reply.txt",
+            "shm draft reply 19d001f35612a211 --body 'See you then' --scheduled-for '2026-03-26T09:00:00Z'",
+        ],
     },
     "draft.reply-all": {
         "description": "Create a reply-all draft on an existing thread",
         "args": {
             "thread_id": {"required": True, "type": "string"},
             "--body": {"required": True, "type": "string"},
+            "--body-file": {"required": False, "type": "filepath", "hint": "Read body from file (use instead of --body)"},
             "--body-html": {"required": False, "type": "string"},
+            "--body-html-file": {"required": False, "type": "filepath", "hint": "Read HTML body from file"},
             "--scheduled-for": {"required": False, "type": "string"},
             "--abort-on-reply": {"required": False, "type": "flag", "hint": "Cancel send if someone replies first"},
             "--reminder": {"required": False, "type": "string", "hint": "Follow-up reminder (ISO datetime)"},
@@ -117,17 +148,22 @@ SCHEMA: dict[str, dict[str, Any]] = {
             "--sensitivity-tenant-id": {"required": False, "type": "string"},
         },
         "safety": "write",
-        "example": "shm draft reply-all 19d001f35612a211 --body 'Sounds good to everyone'",
+        "examples": [
+            "shm draft reply-all 19d001f35612a211 --body 'Sounds good to everyone'",
+            "shm draft reply-all 19d001f35612a211 --body-file ./reply.txt",
+        ],
     },
     "draft.forward": {
         "description": "Create a forward draft on an existing thread",
         "args": {
             "thread_id": {"required": True, "type": "string"},
             "--body": {"required": True, "type": "string"},
+            "--body-file": {"required": False, "type": "filepath", "hint": "Read body from file (use instead of --body)"},
             "--to": {"required": False, "type": "string[]", "hint": "Repeatable"},
             "--cc": {"required": False, "type": "string[]"},
             "--bcc": {"required": False, "type": "string[]"},
             "--body-html": {"required": False, "type": "string"},
+            "--body-html-file": {"required": False, "type": "filepath", "hint": "Read HTML body from file"},
             "--scheduled-for": {"required": False, "type": "string"},
             "--abort-on-reply": {"required": False, "type": "flag", "hint": "Cancel send if someone replies first"},
             "--reminder": {"required": False, "type": "string", "hint": "Follow-up reminder (ISO datetime)"},
@@ -135,17 +171,22 @@ SCHEMA: dict[str, dict[str, Any]] = {
             "--sensitivity-tenant-id": {"required": False, "type": "string"},
         },
         "safety": "write",
-        "example": "shm draft forward 19d001f35612a211 --body 'FYI — see below' --to someone@example.com",
+        "examples": [
+            "shm draft forward 19d001f35612a211 --body 'FYI — see below' --to someone@example.com",
+            "shm draft forward 19d001f35612a211 --body-file ./fwd.txt --to a@example.com --cc b@example.com",
+        ],
     },
     "draft.compose": {
         "description": "Create a new compose draft (new thread)",
         "args": {
             "--subject": {"required": True, "type": "string"},
             "--body": {"required": True, "type": "string"},
+            "--body-file": {"required": False, "type": "filepath", "hint": "Read body from file (use instead of --body)"},
             "--to": {"required": False, "type": "string[]", "hint": "Repeatable"},
             "--cc": {"required": False, "type": "string[]"},
             "--bcc": {"required": False, "type": "string[]"},
             "--body-html": {"required": False, "type": "string"},
+            "--body-html-file": {"required": False, "type": "filepath", "hint": "Read HTML body from file"},
             "--scheduled-for": {"required": False, "type": "string"},
             "--abort-on-reply": {"required": False, "type": "flag", "hint": "Cancel send if someone replies first"},
             "--reminder": {"required": False, "type": "string", "hint": "Follow-up reminder (ISO datetime)"},
@@ -153,7 +194,11 @@ SCHEMA: dict[str, dict[str, Any]] = {
             "--sensitivity-tenant-id": {"required": False, "type": "string"},
         },
         "safety": "write",
-        "example": "shm draft compose --subject 'Hello' --body 'Hi there' --to someone@example.com",
+        "examples": [
+            "shm draft compose --subject 'Hello' --body 'Hi there' --to someone@example.com",
+            "shm draft compose --subject 'Report' --body-file ./email.txt --to someone@example.com",
+            "echo 'body' | shm draft compose --subject 'Hello' --body - --to someone@example.com",
+        ],
     },
     "draft.read": {
         "description": "Read draft(s) from a thread's userdata",
@@ -162,7 +207,10 @@ SCHEMA: dict[str, dict[str, Any]] = {
             "--draft-id": {"required": False, "type": "string"},
         },
         "safety": "read",
-        "example": "shm draft read 19d001f35612a211",
+        "examples": [
+            "shm draft read 19d001f35612a211",
+            "shm draft read 19d001f35612a211 --draft-id draft00abc123",
+        ],
     },
     "draft.discard": {
         "description": "Discard (soft-delete) a draft",
@@ -171,7 +219,9 @@ SCHEMA: dict[str, dict[str, Any]] = {
             "draft_id": {"required": True, "type": "string"},
         },
         "safety": "write",
-        "example": "shm draft discard 19d001f35612a211 draft00abc123",
+        "examples": [
+            "shm draft discard 19d001f35612a211 draft00abc123",
+        ],
     },
     "draft.attach": {
         "description": "Upload a file and attach it to a draft",
@@ -182,7 +232,10 @@ SCHEMA: dict[str, dict[str, Any]] = {
             "--content-type": {"required": False, "type": "string", "default": "application/octet-stream"},
         },
         "safety": "write",
-        "example": "shm draft attach 19d001f35612a211 draft00abc123 ./report.pdf",
+        "examples": [
+            "shm draft attach 19d001f35612a211 draft00abc123 ./report.pdf",
+            "shm draft attach 19d001f35612a211 draft00abc123 ./image.png --content-type image/png",
+        ],
     },
     "draft.share": {
         "description": "Share a draft with a collaboration link",
@@ -192,7 +245,10 @@ SCHEMA: dict[str, dict[str, Any]] = {
             "--name": {"required": False, "type": "string"},
         },
         "safety": "write",
-        "example": "shm draft share 19d001f35612a211 draft00abc123",
+        "examples": [
+            "shm draft share 19d001f35612a211 draft00abc123",
+            "shm draft share 19d001f35612a211 draft00abc123 --name 'Q1 proposal'",
+        ],
     },
     "draft.unshare": {
         "description": "Remove sharing from a draft",
@@ -201,7 +257,9 @@ SCHEMA: dict[str, dict[str, Any]] = {
             "draft_id": {"required": True, "type": "string"},
         },
         "safety": "write",
-        "example": "shm draft unshare 19d001f35612a211 draft00abc123",
+        "examples": [
+            "shm draft unshare 19d001f35612a211 draft00abc123",
+        ],
     },
     "comment.post": {
         "description": "Post a comment on a thread",
@@ -211,13 +269,18 @@ SCHEMA: dict[str, dict[str, Any]] = {
             "--mention": {"required": False, "type": "pair[]", "hint": "EMAIL NAME, repeatable"},
         },
         "safety": "write",
-        "example": "shm comment post 19d001f35612a211 --body 'Please review'",
+        "examples": [
+            "shm comment post 19d001f35612a211 --body 'Please review'",
+            "shm comment post 19d001f35612a211 --body 'Thoughts?' --mention alice@co.com Alice",
+        ],
     },
     "comment.read": {
         "description": "Read all comments on a thread",
         "args": {"thread_id": {"required": True, "type": "string"}},
         "safety": "read",
-        "example": "shm comment read 19d001f35612a211",
+        "examples": [
+            "shm comment read 19d001f35612a211",
+        ],
     },
     "comment.discard": {
         "description": "Delete a comment from a thread",
@@ -226,7 +289,9 @@ SCHEMA: dict[str, dict[str, Any]] = {
             "comment_id": {"required": True, "type": "string"},
         },
         "safety": "write",
-        "example": "shm comment discard 19d001f35612a211 cmt_1abc123",
+        "examples": [
+            "shm comment discard 19d001f35612a211 cmt_1abc123",
+        ],
     },
     "send": {
         "description": "Send a draft — IRREVERSIBLE. Requires --dry-run or --confirm.",
@@ -238,7 +303,10 @@ SCHEMA: dict[str, dict[str, Any]] = {
             "--delay": {"required": False, "type": "int", "default": 20},
         },
         "safety": "irreversible",
-        "example": "shm send --dry-run 19d001f35612a211 draft00abc123",
+        "examples": [
+            "shm send --dry-run 19d001f35612a211 draft00abc123",
+            "shm send --confirm 19d001f35612a211 draft00abc123",
+        ],
     },
     "setup": {
         "description": "Auto-detect credentials from local Superhuman app and write config.json",
@@ -247,19 +315,27 @@ SCHEMA: dict[str, dict[str, Any]] = {
             "--email": {"required": False, "type": "string", "hint": "Choose account when multiple Superhuman accounts are signed in"},
         },
         "safety": "write",
-        "example": "shm setup --email someone@example.com",
+        "examples": [
+            "shm setup",
+            "shm setup --email someone@example.com",
+        ],
     },
     "doctor": {
         "description": "Verify config, auth, and connectivity",
         "args": {},
         "safety": "read",
-        "example": "shm doctor",
+        "examples": [
+            "shm doctor",
+        ],
     },
     "schema": {
         "description": "Introspect available commands",
         "args": {"command": {"required": False, "type": "string"}},
         "safety": "read",
-        "example": "shm schema draft.reply",
+        "examples": [
+            "shm schema",
+            "shm schema draft.reply",
+        ],
     },
 }
 
@@ -315,33 +391,147 @@ def _doctor() -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _schema_examples(key: str) -> list[str]:
+    """Return the examples list for a SCHEMA key, falling back to empty."""
+    entry = SCHEMA.get(key, {})
+    return entry.get("examples", [])
+
+
+def _examples_epilog(schema_key: str) -> str | None:
+    """Build an argparse epilog string from SCHEMA examples."""
+    examples = _schema_examples(schema_key)
+    if not examples:
+        return None
+    lines = ["Examples:"] + [f"  {ex}" for ex in examples]
+    return "\n".join(lines)
+
+
+class _BodyValidationError(Exception):
+    """Raised when --body/--body-file validation fails."""
+
+    def __init__(self, hint: str) -> None:
+        self.hint = hint
+
+
+def _read_text_arg(value: str | None, file_path: str | None) -> str | None:
+    """Read a text value from a direct arg, a file path, or stdin ('-')."""
+    if value == "-":
+        return sys.stdin.read()
+    if value:
+        return value
+    if file_path:
+        return Path(file_path).read_text()
+    return None
+
+
+def _validate_body(args: argparse.Namespace, command_label: str, schema_key: str) -> tuple[str, str | None]:
+    """Validate and resolve body + body_html.  Raises _BodyValidationError."""
+    body_val: str | None = getattr(args, "body", None)
+    body_file_val: str | None = getattr(args, "body_file", None)
+    html_val: str | None = getattr(args, "body_html", None)
+    html_file_val: str | None = getattr(args, "body_html_file", None)
+
+    examples = _schema_examples(schema_key)
+    example_hint = f"\n  Example: {examples[0]}" if examples else ""
+
+    # exactly-one-of --body / --body-file
+    if body_val and body_file_val:
+        raise _BodyValidationError(f"Provide --body or --body-file, not both.{example_hint}")
+    if not body_val and not body_file_val:
+        raise _BodyValidationError(f"--body or --body-file is required.{example_hint}")
+
+    # at-most-one-of --body-html / --body-html-file
+    if html_val and html_file_val:
+        raise _BodyValidationError(f"Provide --body-html or --body-html-file, not both.{example_hint}")
+
+    body = _read_text_arg(body_val, body_file_val)
+    if body is None:
+        raise _BodyValidationError(f"Could not read body.{example_hint}")
+
+    body_html = _read_text_arg(html_val, html_file_val)
+
+    return body, body_html
+
+
+# ---------------------------------------------------------------------------
+# Custom ArgumentParser — JSON envelope on all errors
+# ---------------------------------------------------------------------------
+
+
+class _ShmParser(argparse.ArgumentParser):
+    """ArgumentParser that emits JSON envelope errors instead of stderr text."""
+
+    # Store the SCHEMA key so we can include examples in error output.
+    _schema_key: str = ""
+
+    def error(self, message: str) -> None:  # type: ignore[override]
+        examples = _schema_examples(self._schema_key) if self._schema_key else []
+        hint = message
+        if examples:
+            hint += "\n  Example: " + examples[0]
+        envelope = fail(
+            self._schema_key or "shm",
+            [error("input", "INVALID_ARGS", False, hint)],
+        )
+        json.dump(envelope, sys.stdout, indent=2, default=str)
+        sys.stdout.write("\n")
+        raise SystemExit(1)
+
+    def exit(self, status: int = 0, message: str | None = None) -> None:  # type: ignore[override]
+        # Let --help and --version go through normally (status 0).
+        raise SystemExit(status)
+
+
+def _sub(parent_sub, name: str, *, help: str, schema_key: str = "", **kwargs: Any) -> _ShmParser:
+    """Add a subparser that uses _ShmParser and wires up epilog + formatter."""
+    epilog = _examples_epilog(schema_key) if schema_key else None
+    sp: _ShmParser = parent_sub.add_parser(
+        name,
+        help=help,
+        epilog=epilog,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        **kwargs,
+    )
+    sp._schema_key = schema_key  # noqa: SLF001
+    return sp
+
+
+# ---------------------------------------------------------------------------
 # Argparse setup
 # ---------------------------------------------------------------------------
 
 
-def _build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(
+def _build_parser() -> _ShmParser:
+    p = _ShmParser(
         prog="shm",
         description="Superhuman Mail — agent-friendly CLI for the unofficial Superhuman API",
     )
+    p.add_argument("--version", action="version", version=f"shm {__version__}")
+
     sub = p.add_subparsers(dest="command")
 
     # -- thread --
-    thread_p = sub.add_parser("thread", help="Thread operations")
+    thread_p = _sub(sub, "thread", help="Thread operations")
     tsub = thread_p.add_subparsers(dest="action")
-    t_messages = tsub.add_parser("messages", help="Read messages from local DB")
+
+    t_messages = _sub(tsub, "messages", help="Read messages from local DB", schema_key="thread.messages")
     t_messages.add_argument("thread_id")
-    t_ud = tsub.add_parser("userdata", help="Read userdata from API (advanced)")
+
+    t_ud = _sub(tsub, "userdata", help="Read userdata from API (advanced)", schema_key="thread.userdata")
     t_ud.add_argument("thread_id")
 
-    t_list = tsub.add_parser("list", help="List recent threads")
+    t_list = _sub(tsub, "list", help="List recent threads", schema_key="thread.list")
     t_list.add_argument("--limit", type=int, default=20)
     t_list.add_argument("--unread", action="store_true", help="Only unread threads")
     t_list.add_argument("--participants", action="store_true", help="Include full participant list")
     t_list.add_argument("--fail-empty", action="store_true", help="Exit code 3 if no results")
     t_list.add_argument("--account")
 
-    t_search = tsub.add_parser("search", help="Search threads")
+    t_search = _sub(tsub, "search", help="Search threads", schema_key="thread.search")
     t_search.add_argument("query")
     t_search.add_argument("--limit", type=int, default=10)
     t_search.add_argument("--unread", action="store_true", help="Only unread threads")
@@ -350,14 +540,14 @@ def _build_parser() -> argparse.ArgumentParser:
     t_search.add_argument("--account")
 
     # -- opens --
-    opens_p = sub.add_parser("opens", help="Read read receipts / opens for a thread or recent activity")
+    opens_p = _sub(sub, "opens", help="Read read receipts / opens for a thread or recent activity", schema_key="opens")
     opens_p.add_argument("thread_id", nargs="?", default=None)
     opens_p.add_argument("--recent", action="store_true", help="Show recent opens across threads")
     opens_p.add_argument("--recipient", help="Filter to a specific recipient email")
     opens_p.add_argument("--limit", type=int, default=20, help="Max results for --recent mode")
 
     # -- draft --
-    draft_p = sub.add_parser("draft", help="Draft operations")
+    draft_p = _sub(sub, "draft", help="Draft operations")
     dsub = draft_p.add_subparsers(dest="action")
 
     def _add_smart_send_args(parser: argparse.ArgumentParser) -> None:
@@ -367,77 +557,80 @@ def _build_parser() -> argparse.ArgumentParser:
         parser.add_argument("--sensitivity-label-id", help="Sensitivity label ID")
         parser.add_argument("--sensitivity-tenant-id", help="Sensitivity tenant ID")
 
-    d_reply = dsub.add_parser("reply", help="Create reply draft")
+    def _add_body_args(parser: argparse.ArgumentParser) -> None:
+        """Add --body, --body-file, --body-html, --body-html-file (all optional at argparse level)."""
+        parser.add_argument("--body", help="Message body text (use '-' to read from stdin)")
+        parser.add_argument("--body-file", help="Read body from file path")
+        parser.add_argument("--body-html", help="HTML body (use '-' to read from stdin)")
+        parser.add_argument("--body-html-file", help="Read HTML body from file path")
+
+    d_reply = _sub(dsub, "reply", help="Create reply draft", schema_key="draft.reply")
     d_reply.add_argument("thread_id")
-    d_reply.add_argument("--body", required=True)
-    d_reply.add_argument("--body-html")
+    _add_body_args(d_reply)
     _add_smart_send_args(d_reply)
 
-    d_ra = dsub.add_parser("reply-all", help="Create reply-all draft")
+    d_ra = _sub(dsub, "reply-all", help="Create reply-all draft", schema_key="draft.reply-all")
     d_ra.add_argument("thread_id")
-    d_ra.add_argument("--body", required=True)
-    d_ra.add_argument("--body-html")
+    _add_body_args(d_ra)
     _add_smart_send_args(d_ra)
 
-    d_fwd = dsub.add_parser("forward", help="Create forward draft")
+    d_fwd = _sub(dsub, "forward", help="Create forward draft", schema_key="draft.forward")
     d_fwd.add_argument("thread_id")
-    d_fwd.add_argument("--body", required=True)
+    _add_body_args(d_fwd)
     d_fwd.add_argument("--to", action="append", default=[])
     d_fwd.add_argument("--cc", action="append", default=[])
     d_fwd.add_argument("--bcc", action="append", default=[])
-    d_fwd.add_argument("--body-html")
     _add_smart_send_args(d_fwd)
 
-    d_compose = dsub.add_parser("compose", help="Create new compose draft")
+    d_compose = _sub(dsub, "compose", help="Create new compose draft", schema_key="draft.compose")
     d_compose.add_argument("--subject", required=True)
-    d_compose.add_argument("--body", required=True)
+    _add_body_args(d_compose)
     d_compose.add_argument("--to", action="append", default=[])
     d_compose.add_argument("--cc", action="append", default=[])
     d_compose.add_argument("--bcc", action="append", default=[])
-    d_compose.add_argument("--body-html")
     _add_smart_send_args(d_compose)
 
-    d_read = dsub.add_parser("read", help="Read draft(s)")
+    d_read = _sub(dsub, "read", help="Read draft(s)", schema_key="draft.read")
     d_read.add_argument("thread_id")
     d_read.add_argument("--draft-id")
 
-    d_discard = dsub.add_parser("discard", help="Discard a draft")
+    d_discard = _sub(dsub, "discard", help="Discard a draft", schema_key="draft.discard")
     d_discard.add_argument("thread_id")
     d_discard.add_argument("draft_id")
 
-    d_attach = dsub.add_parser("attach", help="Attach file to draft")
+    d_attach = _sub(dsub, "attach", help="Attach file to draft", schema_key="draft.attach")
     d_attach.add_argument("thread_id")
     d_attach.add_argument("draft_id")
     d_attach.add_argument("file")
     d_attach.add_argument("--content-type", default="application/octet-stream")
 
-    d_share = dsub.add_parser("share", help="Share a draft")
+    d_share = _sub(dsub, "share", help="Share a draft", schema_key="draft.share")
     d_share.add_argument("thread_id")
     d_share.add_argument("draft_id")
     d_share.add_argument("--name")
 
-    d_unshare = dsub.add_parser("unshare", help="Unshare a draft")
+    d_unshare = _sub(dsub, "unshare", help="Unshare a draft", schema_key="draft.unshare")
     d_unshare.add_argument("thread_id")
     d_unshare.add_argument("draft_id")
 
     # -- comment --
-    comment_p = sub.add_parser("comment", help="Comment operations")
+    comment_p = _sub(sub, "comment", help="Comment operations")
     csub = comment_p.add_subparsers(dest="action")
 
-    c_post = csub.add_parser("post", help="Post a comment")
+    c_post = _sub(csub, "post", help="Post a comment", schema_key="comment.post")
     c_post.add_argument("thread_id")
     c_post.add_argument("--body", required=True)
     c_post.add_argument("--mention", nargs=2, metavar=("EMAIL", "NAME"), action="append")
 
-    c_read = csub.add_parser("read", help="Read comments")
+    c_read = _sub(csub, "read", help="Read comments", schema_key="comment.read")
     c_read.add_argument("thread_id")
 
-    c_discard = csub.add_parser("discard", help="Delete a comment")
+    c_discard = _sub(csub, "discard", help="Delete a comment", schema_key="comment.discard")
     c_discard.add_argument("thread_id")
     c_discard.add_argument("comment_id")
 
     # -- send (top-level, irreversible) --
-    send_p = sub.add_parser("send", help="Send a draft (IRREVERSIBLE — requires --dry-run or --confirm)")
+    send_p = _sub(sub, "send", help="Send a draft (IRREVERSIBLE — requires --dry-run or --confirm)", schema_key="send")
     send_p.add_argument("thread_id")
     send_p.add_argument("draft_id")
     send_g = send_p.add_mutually_exclusive_group(required=True)
@@ -446,15 +639,15 @@ def _build_parser() -> argparse.ArgumentParser:
     send_p.add_argument("--delay", type=int, default=20)
 
     # -- setup --
-    setup_p = sub.add_parser("setup", help="Auto-detect credentials from local Superhuman app")
+    setup_p = _sub(sub, "setup", help="Auto-detect credentials from local Superhuman app", schema_key="setup")
     setup_p.add_argument("--config", help="Output path for config.json")
     setup_p.add_argument("--email", help="Email account to bootstrap when multiple accounts are signed in")
 
     # -- doctor --
-    sub.add_parser("doctor", help="Verify config, auth, and connectivity")
+    _sub(sub, "doctor", help="Verify config, auth, and connectivity", schema_key="doctor")
 
     # -- schema --
-    schema_p = sub.add_parser("schema", help="Introspect available commands")
+    schema_p = _sub(sub, "schema", help="Introspect available commands", schema_key="schema")
     schema_p.add_argument("command_name", nargs="?", help="Specific command to describe")
 
     return p
@@ -470,8 +663,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if not args.command:
-        parser.print_help()
-        return 1
+        return emit(fail("shm", [error("input", "NO_COMMAND", False,
+            f"No command specified. Available commands: {', '.join(_COMMANDS)}")]))
 
     # -- thread --
     if args.command == "thread":
@@ -514,14 +707,20 @@ def main(argv: list[str] | None = None) -> int:
         }
         if not hasattr(args, "action") or not args.action:
             return emit(fail("draft", [error("input", "MISSING_ACTION", False, "Use: shm draft reply|reply-all|forward|compose|read|discard|attach|share|unshare")]))
-        elif args.action == "reply":
-            return emit(_draft.create_reply(args.thread_id, args.body, body_html=args.body_html, **ss))
-        elif args.action == "reply-all":
-            return emit(_draft.create_reply(args.thread_id, args.body, reply_all=True, body_html=args.body_html, **ss))
-        elif args.action == "forward":
-            return emit(_draft.create_forward(args.thread_id, args.body, to=args.to, cc=args.cc, bcc=args.bcc, body_html=args.body_html, **ss))
-        elif args.action == "compose":
-            return emit(_draft.create_compose(args.subject, args.body, to=args.to, cc=args.cc, bcc=args.bcc, body_html=args.body_html, **ss))
+        elif args.action in ("reply", "reply-all", "forward", "compose"):
+            schema_key = f"draft.{args.action}"
+            try:
+                body, body_html = _validate_body(args, f"draft {args.action}", schema_key)
+            except _BodyValidationError as e:
+                return emit(fail(schema_key, [error("input", "BODY_REQUIRED", False, e.hint)]))
+            if args.action == "reply":
+                return emit(_draft.create_reply(args.thread_id, body, body_html=body_html, **ss))
+            elif args.action == "reply-all":
+                return emit(_draft.create_reply(args.thread_id, body, reply_all=True, body_html=body_html, **ss))
+            elif args.action == "forward":
+                return emit(_draft.create_forward(args.thread_id, body, to=args.to, cc=args.cc, bcc=args.bcc, body_html=body_html, **ss))
+            elif args.action == "compose":
+                return emit(_draft.create_compose(args.subject, body, to=args.to, cc=args.cc, bcc=args.bcc, body_html=body_html, **ss))
         elif args.action == "read":
             return emit(_draft.read(args.thread_id, draft_id=args.draft_id))
         elif args.action == "discard":
@@ -555,7 +754,6 @@ def main(argv: list[str] | None = None) -> int:
     # -- setup --
     elif args.command == "setup":
         try:
-            from pathlib import Path
             config_path = Path(args.config) if args.config else None
             result = _setup.run_setup(config_path=config_path, email=args.email)
             return emit(ok("setup", result))
@@ -578,8 +776,8 @@ def main(argv: list[str] | None = None) -> int:
             return emit(ok("schema", {"commands": summary}))
 
     else:
-        parser.print_help()
-        return 1
+        return emit(fail("shm", [error("input", "UNKNOWN_COMMAND", False,
+            f"Unknown command: {args.command}. Available: {', '.join(_COMMANDS)}")]))
 
     return 0
 

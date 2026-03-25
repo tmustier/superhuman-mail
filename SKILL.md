@@ -90,8 +90,17 @@ Rules:
 
 ### Draft commands
 
+Body can be provided inline, from a file, or via stdin:
+- `--body "text"` — inline
+- `--body-file ./path.txt` — read from file
+- `--body -` — read from stdin (pipe)
+
+Same for HTML body: `--body-html`, `--body-html-file`, `--body-html -`.
+
 ```bash
 shm draft reply <thread_id> --body "..." [--body-html html] [smart-send flags]
+shm draft reply <thread_id> --body-file ./reply.txt [smart-send flags]
+echo "body" | shm draft reply <thread_id> --body - [smart-send flags]
 shm draft reply-all <thread_id> --body "..." [--body-html html] [smart-send flags]
 shm draft forward <thread_id> --body "..." [--to email ...] [--cc email ...] [--bcc email ...] [--body-html html] [smart-send flags]
 shm draft compose --subject "..." --body "..." [--to email ...] [--cc email ...] [--bcc email ...] [--body-html html] [smart-send flags]
