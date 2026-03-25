@@ -116,7 +116,7 @@ SCHEMA: dict[str, dict[str, Any]] = {
         "description": "Create a reply draft on an existing thread",
         "args": {
             "thread_id": {"required": True, "type": "string"},
-            "--body": {"required": True, "type": "string"},
+            "--body": {"required": False, "type": "string", "hint": "Body text (required unless --body-file given; use '-' for stdin)"},
             "--body-file": {"required": False, "type": "filepath", "hint": "Read body from file (use instead of --body)"},
             "--body-html": {"required": False, "type": "string"},
             "--body-html-file": {"required": False, "type": "filepath", "hint": "Read HTML body from file"},
@@ -137,7 +137,7 @@ SCHEMA: dict[str, dict[str, Any]] = {
         "description": "Create a reply-all draft on an existing thread",
         "args": {
             "thread_id": {"required": True, "type": "string"},
-            "--body": {"required": True, "type": "string"},
+            "--body": {"required": False, "type": "string", "hint": "Body text (required unless --body-file given; use '-' for stdin)"},
             "--body-file": {"required": False, "type": "filepath", "hint": "Read body from file (use instead of --body)"},
             "--body-html": {"required": False, "type": "string"},
             "--body-html-file": {"required": False, "type": "filepath", "hint": "Read HTML body from file"},
@@ -157,7 +157,7 @@ SCHEMA: dict[str, dict[str, Any]] = {
         "description": "Create a forward draft on an existing thread",
         "args": {
             "thread_id": {"required": True, "type": "string"},
-            "--body": {"required": True, "type": "string"},
+            "--body": {"required": False, "type": "string", "hint": "Body text (required unless --body-file given; use '-' for stdin)"},
             "--body-file": {"required": False, "type": "filepath", "hint": "Read body from file (use instead of --body)"},
             "--to": {"required": False, "type": "string[]", "hint": "Repeatable"},
             "--cc": {"required": False, "type": "string[]"},
@@ -180,7 +180,7 @@ SCHEMA: dict[str, dict[str, Any]] = {
         "description": "Create a new compose draft (new thread)",
         "args": {
             "--subject": {"required": True, "type": "string"},
-            "--body": {"required": True, "type": "string"},
+            "--body": {"required": False, "type": "string", "hint": "Body text (required unless --body-file given; use '-' for stdin)"},
             "--body-file": {"required": False, "type": "filepath", "hint": "Read body from file (use instead of --body)"},
             "--to": {"required": False, "type": "string[]", "hint": "Repeatable"},
             "--cc": {"required": False, "type": "string[]"},
@@ -418,10 +418,13 @@ class _BodyValidationError(Exception):
 
 
 def _read_text_arg(value: str | None, file_path: str | None) -> str | None:
-    """Read a text value from a direct arg, a file path, or stdin ('-')."""
+    """Read a text value from a direct arg, a file path, or stdin ('-').
+
+    Raises OSError on file read failures (caller should catch).
+    """
     if value == "-":
         return sys.stdin.read()
-    if value:
+    if value is not None:
         return value
     if file_path:
         return Path(file_path).read_text()
@@ -439,20 +442,26 @@ def _validate_body(args: argparse.Namespace, command_label: str, schema_key: str
     example_hint = f"\n  Example: {examples[0]}" if examples else ""
 
     # exactly-one-of --body / --body-file
-    if body_val and body_file_val:
+    if body_val is not None and body_file_val is not None:
         raise _BodyValidationError(f"Provide --body or --body-file, not both.{example_hint}")
-    if not body_val and not body_file_val:
+    if body_val is None and body_file_val is None:
         raise _BodyValidationError(f"--body or --body-file is required.{example_hint}")
 
     # at-most-one-of --body-html / --body-html-file
-    if html_val and html_file_val:
+    if html_val is not None and html_file_val is not None:
         raise _BodyValidationError(f"Provide --body-html or --body-html-file, not both.{example_hint}")
 
-    body = _read_text_arg(body_val, body_file_val)
+    try:
+        body = _read_text_arg(body_val, body_file_val)
+    except OSError as e:
+        raise _BodyValidationError(f"Cannot read body file: {e}{example_hint}") from e
     if body is None:
         raise _BodyValidationError(f"Could not read body.{example_hint}")
 
-    body_html = _read_text_arg(html_val, html_file_val)
+    try:
+        body_html = _read_text_arg(html_val, html_file_val)
+    except OSError as e:
+        raise _BodyValidationError(f"Cannot read HTML body file: {e}{example_hint}") from e
 
     return body, body_html
 
