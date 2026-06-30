@@ -45,7 +45,7 @@ def _comment_id() -> str:
 
 
 def _build_html(text: str, mentions: list[dict[str, str]] | None = None) -> str:
-    escaped = html_mod.escape(text)
+    escaped = html_mod.escape(text.replace("\r\n", "\n").replace("\r", "\n"))
     if mentions:
         sorted_mentions = sorted(mentions, key=lambda m: len(m.get("fullName", m.get("email", ""))), reverse=True)
         for m in sorted_mentions:
@@ -59,8 +59,15 @@ def _build_html(text: str, mentions: list[dict[str, str]] | None = None) -> str:
             if email and email != name:
                 escaped = escaped.replace(f"@{html_mod.escape(email)}", tag)
 
-    paragraphs = escaped.split("\n\n")
-    body = "".join(f"<p>{p}</p>" for p in paragraphs if p.strip())
+    # HTML collapses literal newline characters inside a <p>, which made agent
+    # status comments appear as one wrapped wall of text in Superhuman. Keep
+    # blank lines as paragraph breaks and render single newlines explicitly.
+    paragraphs = re.split(r"\n[ \t]*\n+", escaped.strip("\n"))
+    rendered_paragraphs = []
+    for paragraph in paragraphs:
+        if paragraph.strip():
+            rendered_paragraphs.append(f"<p>{'<br />'.join(paragraph.splitlines())}</p>")
+    body = "".join(rendered_paragraphs)
     return f"<div>{body}</div>" if body else "<div><p></p></div>"
 
 
