@@ -82,6 +82,28 @@ def _attachments_json(attachments: list[dict[str, Any]] | None) -> list[dict[str
     return out
 
 
+def _merge_message_attachments(draft: dict[str, Any], msg_data: dict[str, Any]) -> dict[str, Any]:
+    """Merge message-level attachments into the draft.
+
+    Superhuman stores draft attachments at the message level
+    (``messages/{draft_id}/attachments/{uuid}``), not on the draft object
+    itself (``_to_backend`` strips ``attachments`` on write). The app merges
+    them at send time; do the same here so sends include attachments.
+    """
+    existing = {str(a.get("uuid")) for a in (draft.get("attachments") or [])}
+    merged = list(draft.get("attachments") or [])
+    msg_atts = msg_data.get("attachments") or {}
+    for att_uuid, att in sorted(msg_atts.items()):
+        if not isinstance(att, dict) or att.get("discardedAt"):
+            continue
+        if str(att.get("uuid") or att_uuid) in existing:
+            continue
+        merged.append(att)
+    if merged:
+        draft = {**draft, "attachments": merged}
+    return draft
+
+
 # ---------------------------------------------------------------------------
 # Build outgoing message
 # ---------------------------------------------------------------------------
@@ -160,6 +182,8 @@ def validate(thread_id: str, draft_id: str) -> dict[str, Any]:
         if msg_data.get("discardedAt"):
             return fail("send.validate", [error("conflict", "DRAFT_DISCARDED", False, "Draft has been discarded")])
 
+        draft = _merge_message_attachments(draft, msg_data)
+
         # Validate required fields
         warnings: list[str] = []
         to_list = draft.get("to") or []
@@ -215,6 +239,8 @@ def execute(thread_id: str, draft_id: str, *, delay: int = SEND_DELAY_SECONDS) -
         draft = msg_data.get("draft")
         if not draft:
             return fail("send", [error("not-found", "DRAFT_NOT_FOUND", False, f"Draft {draft_id} not found")])
+
+        draft = _merge_message_attachments(draft, msg_data)
 
         outgoing = _build_outgoing(draft)
         request_body = {
