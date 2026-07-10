@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "superhuman-mail"
-version = "0.2.1"
+version = "0.3.0"
 description = "Unofficial Superhuman mail API client and agent-friendly CLI"
 requires-python = ">=3.11"
 license = "MIT"
@@ -12,6 +12,9 @@ dependencies = ["cryptography"]
 
 [tool.setuptools.packages.find]
 include = ["superhuman_mail*"]
+
+[tool.setuptools.package-data]
+superhuman_mail = ["renderer_probe.js"]
 
 [project.scripts]
 shm = "superhuman_mail.cli:main"

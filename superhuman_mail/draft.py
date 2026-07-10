@@ -14,8 +14,8 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from . import _auth, _config, _local, thread as _thread
-from ._envelope import classify_exception, fail, ok
+from . import _auth, _config, _local, lifecycle, thread as _thread
+from ._envelope import classify_exception, error, fail, ok
 
 # ---------------------------------------------------------------------------
 # ID generation
@@ -733,22 +733,88 @@ def create_compose(
 # ---------------------------------------------------------------------------
 
 
-def read(thread_id: str, draft_id: str | None = None) -> dict[str, Any]:
-    """Read draft(s) from thread userdata."""
+def read(
+    thread_id: str,
+    draft_id: str | None = None,
+    *,
+    account: str | None = None,
+    active_only: bool = False,
+) -> dict[str, Any]:
+    """Read source drafts with explicit lifecycle and active/terminal counts."""
     try:
-        ud = _thread.userdata_raw(thread_id)
-        if not ud:
-            return ok("draft.read", {"thread_id": thread_id, "drafts": []})
-        msgs = ud.get("messages", {})
+        observed, warnings = lifecycle.observe_thread(thread_id, account=account)
+        msgs = observed["userdata"].get("messages", {})
+        states = observed["lifecycle_by_draft_id"]
         drafts: list[dict[str, Any]] = []
-        for mid, msg_data in msgs.items():
-            d = msg_data.get("draft")
-            if d and not msg_data.get("discardedAt"):
-                if draft_id is None or mid == draft_id:
-                    drafts.append(d)
-        return ok("draft.read", {"thread_id": thread_id, "draft_count": len(drafts), "drafts": drafts})
+        selected_states: dict[str, dict[str, Any]] = {}
+        active_count = 0
+        terminal_count = 0
+        nonterminal_blocked_count = 0
+
+        for mid, state in states.items():
+            if draft_id is not None and mid != draft_id:
+                continue
+            if state["state"] == lifecycle.ACTIVE:
+                active_count += 1
+            elif state["terminal"]:
+                terminal_count += 1
+            else:
+                nonterminal_blocked_count += 1
+            selected_states[mid] = state
+            if not active_only or state["state"] == lifecycle.ACTIVE:
+                draft_value = (msgs.get(mid) or {}).get("draft")
+                if isinstance(draft_value, dict):
+                    drafts.append(draft_value)
+
+        if terminal_count and not active_only:
+            warnings.append(
+                f"Included {terminal_count} terminal source draft(s); inspect lifecycle_by_draft_id before acting"
+            )
+        return ok("draft.read", {
+            "account": observed["account"],
+            "thread_id": thread_id,
+            "draft_count": len(drafts),
+            "active_draft_count": active_count,
+            "terminal_draft_count": terminal_count,
+            "nonterminal_blocked_draft_count": nonterminal_blocked_count,
+            "active_only": active_only,
+            "drafts": drafts,
+            "lifecycle_by_draft_id": selected_states,
+        }, warnings=warnings)
+    except LookupError:
+        return ok("draft.read", {
+            "thread_id": thread_id,
+            "draft_count": 0,
+            "active_draft_count": 0,
+            "terminal_draft_count": 0,
+            "nonterminal_blocked_draft_count": 0,
+            "active_only": active_only,
+            "drafts": [],
+            "lifecycle_by_draft_id": {},
+        })
     except Exception as e:
         return fail("draft.read", [classify_exception(e)])
+
+
+def status(thread_id: str, draft_id: str | None = None, *, account: str | None = None) -> dict[str, Any]:
+    """Return canonical lifecycle state without presenting source drafts as mail."""
+    try:
+        observed, warnings = lifecycle.observe_thread(thread_id, account=account)
+        states = observed["lifecycle_by_draft_id"]
+        if draft_id is not None:
+            state = states.get(draft_id)
+            if state is None:
+                return fail("draft.status", [
+                    error("not-found", "DRAFT_NOT_FOUND", False, f"Draft {draft_id} not found on thread {thread_id}")
+                ])
+            states = {draft_id: state}
+        return ok("draft.status", {
+            "account": observed["account"],
+            "thread_id": thread_id,
+            "lifecycle_by_draft_id": states,
+        }, warnings=warnings)
+    except Exception as e:
+        return fail("draft.status", [classify_exception(e)])
 
 
 def discard(thread_id: str, draft_id: str) -> dict[str, Any]:

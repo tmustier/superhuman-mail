@@ -4,14 +4,16 @@ Send is IRREVERSIBLE. The CLI requires --dry-run or --confirm.
 """
 from __future__ import annotations
 
-import json
+import re
 import time
 import urllib.request
 import uuid
+from email.headerregistry import Address
 from email.utils import parseaddr
+from html import unescape
 from typing import Any
 
-from . import _auth, _config, thread as _thread
+from . import _auth, attestation as _attestation, attempts as _attempts, lifecycle
 from ._envelope import classify_exception, error, fail, ok
 
 # ---------------------------------------------------------------------------
@@ -163,52 +165,142 @@ def _build_outgoing(draft: dict[str, Any], sid: str | None = None) -> dict[str, 
 SEND_DELAY_SECONDS = 20
 
 
-def validate(thread_id: str, draft_id: str) -> dict[str, Any]:
-    """Dry-run: read the draft and validate it's sendable.
+class SendSafetyError(RuntimeError):
+    """A deterministic execute-time safety guard rejected a draft."""
 
-    Returns draft details and any issues, WITHOUT actually sending.
-    """
+    def __init__(self, code: str, hint: str, *, cls: str = "conflict") -> None:
+        super().__init__(hint)
+        self.code = code
+        self.hint = hint
+        self.cls = cls
+
+
+def _safety_failure(command: str, exc: SendSafetyError) -> dict[str, Any]:
+    return fail(command, [error(exc.cls, exc.code, False, exc.hint)])
+
+
+def _valid_address(contact: Any) -> bool:
+    normalized = _contact_json(contact)
+    value = normalized.get("email", "").strip()
+    if not value or any(ch.isspace() for ch in value):
+        return False
     try:
-        ud = _thread.userdata_raw(thread_id)
-        if not ud:
-            return fail("send.validate", [error("not-found", "THREAD_NOT_FOUND", False, f"No userdata for thread {thread_id}")])
+        parsed = Address(addr_spec=value)
+    except (TypeError, ValueError):
+        return False
+    return bool(parsed.username and parsed.domain and "." in parsed.domain.rstrip("."))
 
-        msgs = ud.get("messages", {})
-        msg_data = msgs.get(draft_id, {})
-        draft = msg_data.get("draft")
-        if not draft:
-            return fail("send.validate", [error("not-found", "DRAFT_NOT_FOUND", False, f"Draft {draft_id} not found on thread {thread_id}")])
 
-        if msg_data.get("discardedAt"):
-            return fail("send.validate", [error("conflict", "DRAFT_DISCARDED", False, "Draft has been discarded")])
+def _body_has_content(value: str) -> bool:
+    if not value or not value.strip():
+        return False
+    text = unescape(re.sub(r"<[^>]*>", " ", value)).replace("\u200b", "").replace("\ufeff", "")
+    if text.strip():
+        return True
+    return bool(re.search(r"<(?:img|ul|ol|li|table|tr|td|blockquote)\b", value, flags=re.IGNORECASE))
 
-        draft = _merge_message_attachments(draft, msg_data)
 
-        # Validate required fields
-        warnings: list[str] = []
-        to_list = draft.get("to") or []
-        if not to_list:
-            warnings.append("Draft has no recipients (to is empty)")
-        if not (draft.get("subject") or "").strip():
-            warnings.append("Draft has no subject")
-        if not (draft.get("body") or draft.get("htmlBody") or "").strip():
-            warnings.append("Draft has no body")
+def _preflight(
+    thread_id: str,
+    draft_id: str,
+    *,
+    account: str | None = None,
+    sid: str | None = None,
+    require_explicit_account: bool = False,
+    allow_empty_subject: bool = False,
+    attempt_superhuman_id: str | None = None,
+) -> dict[str, Any]:
+    """Authoritative read-only guard used by both validate and execute."""
+    try:
+        state, wrapper, warnings = lifecycle.observe(
+            thread_id,
+            draft_id,
+            account=account,
+            require_explicit_account=require_explicit_account,
+            attempt_superhuman_id=attempt_superhuman_id,
+        )
+    except LookupError as exc:
+        raise SendSafetyError("DRAFT_NOT_FOUND", str(exc), cls="not-found") from exc
+    except lifecycle.AccountBindingError as exc:
+        raise SendSafetyError("ACCOUNT_BINDING_MISMATCH", str(exc), cls="input") from exc
 
-        outgoing = _build_outgoing(draft)
+    state_name = state["state"]
+    if state_name == lifecycle.PROVIDER_CONFIRMED:
+        raise SendSafetyError("DRAFT_ALREADY_SENT", "Draft already has an immutable provider-confirmed sent message")
+    if state_name == lifecycle.BACKEND_CONFIRMED:
+        raise SendSafetyError("DRAFT_ALREADY_SENT", "Draft has a terminal backend send job and cannot be submitted again")
+    if state_name == lifecycle.DISCARDED:
+        raise SendSafetyError("DRAFT_DISCARDED", "Draft has been discarded")
+    if state_name in {lifecycle.SCHEDULED, lifecycle.REQUESTED, lifecycle.PENDING_UNDO}:
+        raise SendSafetyError("SEND_ALREADY_PENDING", f"Draft already has a nonterminal send job ({state_name})")
+    if state_name in {lifecycle.FAILED, lifecycle.ABORTED}:
+        raise SendSafetyError("TERMINAL_SEND_JOB", f"Draft has a terminal send job ({state_name}); create a new draft")
+    if state_name == lifecycle.INCONSISTENT:
+        raise SendSafetyError("LIFECYCLE_INCONSISTENT", "Draft has contradictory send evidence; reconcile it before any send")
+    if state_name != lifecycle.ACTIVE:
+        raise SendSafetyError("DRAFT_NOT_ACTIVE", f"Draft is not active ({state_name})")
 
+    draft = wrapper.get("draft")
+    if not isinstance(draft, dict):
+        raise SendSafetyError("DRAFT_NOT_FOUND", f"Draft {draft_id} not found", cls="not-found")
+    draft = _merge_message_attachments(draft, wrapper)
+
+    recipients = list(draft.get("to") or []) + list(draft.get("cc") or []) + list(draft.get("bcc") or [])
+    if not recipients:
+        raise SendSafetyError("RECIPIENTS_REQUIRED", "Draft has no recipients", cls="input")
+    invalid = [_contact_json(item).get("email", "") for item in recipients if not _valid_address(item)]
+    if invalid:
+        raise SendSafetyError("INVALID_RECIPIENT", "Draft contains an invalid recipient address", cls="input")
+
+    from_email = _contact_json(draft.get("from")).get("email", "").lower()
+    bound_email = str(state["account"]["email"]).lower()
+    if not from_email or from_email != bound_email:
+        raise SendSafetyError(
+            "FROM_ACCOUNT_MISMATCH",
+            f"Draft From address is not the bound account {state['account']['email']}",
+            cls="input",
+        )
+
+    if not _body_has_content(str(draft.get("htmlBody") or draft.get("body") or "")):
+        raise SendSafetyError("BODY_REQUIRED", "Draft body is empty", cls="input")
+    if not allow_empty_subject and not str(draft.get("subject") or "").strip():
+        raise SendSafetyError("SUBJECT_REQUIRED", "Draft subject is empty and has not been explicitly attested", cls="input")
+
+    outgoing = _build_outgoing(draft, sid=sid)
+    return {
+        "thread_id": thread_id,
+        "draft_id": draft_id,
+        "draft": draft,
+        "wrapper": wrapper,
+        "lifecycle": state,
+        "outgoing": outgoing,
+        "warnings": warnings,
+    }
+
+
+def validate(thread_id: str, draft_id: str, *, account: str | None = None) -> dict[str, Any]:
+    """Read-only metadata preflight. Exact render attestation remains required."""
+    try:
+        checked = _preflight(thread_id, draft_id, account=account)
+        draft = checked["draft"]
+        outgoing = checked["outgoing"]
         result: dict[str, Any] = {
             "thread_id": thread_id,
             "draft_id": draft_id,
-            "sendable": len(warnings) == 0 or bool(to_list),
+            "sendable": True,
+            "send_eligible": False,
+            "render_attested": False,
             "action": draft.get("action", "compose"),
             "from": outgoing.get("from"),
             "to": outgoing.get("to"),
             "cc": outgoing.get("cc"),
+            "bcc_count": len(outgoing.get("bcc") or []),
             "subject": outgoing.get("subject"),
             "body_preview": (draft.get("snippet") or "")[:200],
             "has_attachments": bool(outgoing.get("attachments")),
+            "lifecycle": checked["lifecycle"],
+            "next_step": "Create an exact render attestation before --confirm",
         }
-        # Include smart-send fields when set
         for draft_key, result_key in {
             "scheduledFor": "scheduled_for",
             "abortOnReply": "abort_on_reply",
@@ -219,57 +311,333 @@ def validate(thread_id: str, draft_id: str) -> dict[str, Any]:
             val = draft.get(draft_key)
             if val not in (None, [], "", False):
                 result[result_key] = val
-        return ok("send.validate", result, warnings=warnings)
-    except Exception as e:
-        return fail("send.validate", [classify_exception(e)])
+        return ok("send.validate", result, warnings=checked["warnings"])
+    except SendSafetyError as exc:
+        return _safety_failure("send.validate", exc)
+    except Exception as exc:
+        return fail("send.validate", [classify_exception(exc)])
 
 
-def execute(thread_id: str, draft_id: str, *, delay: int = SEND_DELAY_SECONDS) -> dict[str, Any]:
-    """Actually send a draft. THIS IS IRREVERSIBLE.
+def _post_exact_payload(outgoing: dict[str, Any], *, delay: int) -> None:
+    """POST freshly probed exact payload bytes; caller owns idempotent claim."""
+    request_body = {
+        "version": 3,
+        "outgoing_message": outgoing,
+        "delay": delay,
+        "is_multi_recipient": True,
+    }
+    req = urllib.request.Request(
+        "https://mail.superhuman.com/~backend/messages/send",
+        data=_attestation.canonical_bytes(request_body),
+        headers={**_auth.api_headers(), "Content-Type": "application/json; charset=utf-8"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        resp.read()
 
-    The draft must already exist on the thread. Use validate() first.
-    """
-    try:
-        ud = _thread.userdata_raw(thread_id)
-        if not ud:
-            return fail("send", [error("not-found", "THREAD_NOT_FOUND", False, f"No userdata for thread {thread_id}")])
 
-        msgs = ud.get("messages", {})
-        msg_data = msgs.get(draft_id, {})
-        draft = msg_data.get("draft")
-        if not draft:
-            return fail("send", [error("not-found", "DRAFT_NOT_FOUND", False, f"Draft {draft_id} not found")])
+def _attempt_result(attempt: dict[str, Any], state: dict[str, Any], *, accepted: bool) -> dict[str, Any]:
+    provider_confirmed = state["state"] == lifecycle.PROVIDER_CONFIRMED
+    material_state = state["state"]
+    if accepted and material_state == lifecycle.ACTIVE and attempt.get("state") == "unknown":
+        material_state = "unknown"
+    return {
+        "attempt_id": attempt["attempt_id"],
+        "thread_id": attempt["thread_id"],
+        "draft_id": attempt["draft_id"],
+        "attestation_id": attempt["attestation_id"],
+        "state": material_state,
+        "accepted": accepted,
+        "sent": provider_confirmed,
+        "provider_confirmed": provider_confirmed,
+        "outbound_evidence": bool(state["outbound_evidence"]),
+        "superhuman_id": attempt["superhuman_id"],
+        "provider_message_id": (state.get("provider_message") or {}).get("id"),
+        "idempotency_scope": _attempts.IDEMPOTENCY_SCOPE,
+        "lifecycle": state,
+    }
 
-        draft = _merge_message_attachments(draft, msg_data)
 
-        outgoing = _build_outgoing(draft)
-        request_body = {
-            "version": 3,
-            "outgoing_message": outgoing,
-            "delay": delay,
-            "is_multi_recipient": True,
-        }
+def _reconcile(
+    attempt: dict[str, Any],
+    *,
+    account: str,
+    wait: float,
+    journal: _attempts.AttemptJournal,
+    sleep: Any = time.sleep,
+    monotonic: Any = time.monotonic,
+) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
+    """Poll backend/provider evidence without ever creating a new identity."""
+    deadline = monotonic() + max(0.0, wait)
+    interval = 0.25
+    warnings: list[str] = []
+    last_state: dict[str, Any] | None = None
+    last_attempt = attempt
 
-        req = urllib.request.Request(
-            "https://mail.superhuman.com/~backend/messages/send",
-            data=json.dumps(request_body).encode(),
-            headers={**_auth.api_headers(), "Content-Type": "application/json; charset=utf-8"},
-            method="POST",
+    while True:
+        state, _wrapper, observed_warnings = lifecycle.observe(
+            attempt["thread_id"],
+            attempt["draft_id"],
+            account=account,
+            require_explicit_account=True,
+            attempt_superhuman_id=attempt["superhuman_id"],
         )
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            raw = resp.read().decode()
-            try:
-                result = json.loads(raw) if raw else {}
-            except json.JSONDecodeError:
-                result = {}
+        warnings.extend(item for item in observed_warnings if item not in warnings)
+        if (
+            attempt.get("state") == lifecycle.PROVIDER_CONFIRMED
+            and attempt.get("provider_message_id")
+            and state["state"] != lifecycle.PROVIDER_CONFIRMED
+        ):
+            # An immutable provider confirmation already recorded by this
+            # attempt cannot be downgraded by a later stale/empty local cache.
+            preserved = {
+                **state,
+                "state": lifecycle.PROVIDER_CONFIRMED,
+                "terminal": True,
+                "send_blocked": True,
+                "outbound_evidence": True,
+                "confidence": "provider_confirmed_journal",
+                "consistency": "observation_lag",
+                "provider_message": {
+                    **(state.get("provider_message") or {}),
+                    "id": attempt["provider_message_id"],
+                },
+            }
+            warnings.append("Current provider cache lags a previously recorded immutable confirmation")
+            return attempt, preserved, warnings
+        last_state = state
+        update: dict[str, Any] = {"last_reconciled_at": datetime_now_iso()}
+        state_name = state["state"]
+        if state_name == lifecycle.PROVIDER_CONFIRMED:
+            provider = state.get("provider_message") or {}
+            update.update({
+                "provider_message_id": provider.get("id"),
+                "provider_sent_at": state.get("timestamps", {}).get("provider_message_at"),
+            })
+            last_attempt = journal.update(attempt["attempt_id"], state=state_name, **update)
+            return last_attempt, state, warnings
+        if state_name == lifecycle.BACKEND_CONFIRMED:
+            update["backend_sent_at"] = state.get("timestamps", {}).get("sent_at")
+            last_attempt = journal.update(attempt["attempt_id"], state=state_name, **update)
+        elif state_name in {lifecycle.FAILED, lifecycle.ABORTED, lifecycle.SCHEDULED}:
+            last_attempt = journal.update(attempt["attempt_id"], state=state_name, **update)
+            return last_attempt, state, warnings
+        elif state_name == lifecycle.INCONSISTENT:
+            last_attempt = journal.update(attempt["attempt_id"], state="unknown", **update)
+            return last_attempt, state, warnings
+        else:
+            # An active source after a POST claim is an unknown/lagging outcome,
+            # never permission to mint another ID or post again.
+            attempt_state = state_name if state_name != lifecycle.ACTIVE else "unknown"
+            last_attempt = journal.update(attempt["attempt_id"], state=attempt_state, **update)
 
-        return ok("send", {
+        now = monotonic()
+        if now >= deadline:
+            assert last_state is not None
+            return last_attempt, last_state, warnings
+        sleep(min(interval, max(0.0, deadline - now)))
+        interval = min(interval * 2, 5.0)
+
+
+def datetime_now_iso() -> str:
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
+
+
+def status(
+    thread_id: str,
+    draft_id: str,
+    *,
+    account: str,
+    wait: float = 0,
+    journal: _attempts.AttemptJournal | None = None,
+) -> dict[str, Any]:
+    """Reconcile one draft/attempt and return a truthful typed state."""
+    try:
+        identity, warnings = lifecycle.resolve_account(account, require_explicit=True)
+        journal = journal or _attempts.AttemptJournal()
+        attempt = journal.get(identity["provider_user_id"], draft_id)
+        if attempt:
+            updated, state, observed_warnings = _reconcile(
+                attempt,
+                account=identity["email"],
+                wait=wait,
+                journal=journal,
+            )
+            return ok("send.status", _attempt_result(updated, state, accepted=int(updated["post_count"]) > 0), warnings=warnings + observed_warnings)
+        state, _wrapper, observed_warnings = lifecycle.observe(
+            thread_id,
+            draft_id,
+            account=identity["email"],
+            require_explicit_account=True,
+        )
+        return ok("send.status", {
+            "attempt_id": None,
             "thread_id": thread_id,
             "draft_id": draft_id,
-            "delay_seconds": delay,
-            "to": outgoing.get("to"),
-            "subject": outgoing.get("subject"),
-            "sent": True,
-        })
-    except Exception as e:
-        return fail("send", [classify_exception(e)])
+            "state": state["state"],
+            "accepted": False,
+            "sent": state["state"] == lifecycle.PROVIDER_CONFIRMED,
+            "provider_confirmed": state["state"] == lifecycle.PROVIDER_CONFIRMED,
+            "outbound_evidence": state["outbound_evidence"],
+            "idempotency_scope": _attempts.IDEMPOTENCY_SCOPE,
+            "lifecycle": state,
+        }, warnings=warnings + observed_warnings)
+    except Exception as exc:
+        return fail("send.status", [classify_exception(exc)])
+
+
+def execute(
+    thread_id: str,
+    draft_id: str,
+    *,
+    delay: int = SEND_DELAY_SECONDS,
+    account: str | None = None,
+    attestation: str | None = None,
+    approval_ref: str | None = None,
+    wait: float = 120,
+    journal: _attempts.AttemptJournal | None = None,
+    renderer: _attestation.Renderer | None = None,
+) -> dict[str, Any]:
+    """Strict, locally idempotent exact-render send execution.
+
+    The external grace period must finish before this function is invoked.  It
+    performs the mandatory second no-write renderer probe immediately before
+    the one locally claimed POST, then waits for provider confirmation.
+    """
+    try:
+        if not account:
+            raise SendSafetyError("ACCOUNT_REQUIRED", "--account is required for strict send", cls="input")
+        if not attestation:
+            # Even a malformed invocation runs the lifecycle/envelope/body
+            # guard inside execute, closing the terminal-draft resend path.
+            _preflight(
+                thread_id,
+                draft_id,
+                account=account,
+                require_explicit_account=True,
+                allow_empty_subject=True,
+            )
+            raise SendSafetyError("ATTESTATION_REQUIRED", "--attestation is required for strict send", cls="input")
+        if not approval_ref:
+            raise SendSafetyError("APPROVAL_REFERENCE_REQUIRED", "--approval-ref is required for strict send", cls="input")
+        if delay < 0:
+            raise SendSafetyError("INVALID_DELAY", "--delay must be non-negative", cls="input")
+
+        record = _attestation.load(attestation)
+        _attestation.verify(record)
+        if str(record.get("thread_id")) != thread_id or str(record.get("draft_id")) != draft_id:
+            raise SendSafetyError("ATTESTATION_DRAFT_MISMATCH", "Attestation belongs to a different draft/thread")
+        if int(record.get("delay_seconds", -1)) != delay:
+            raise SendSafetyError("ATTESTATION_DELAY_MISMATCH", "Send delay differs from the approved attestation")
+        identity, account_warnings = lifecycle.resolve_account(account, require_explicit=True)
+        if str(record.get("account", {}).get("provider_user_id")) != identity["provider_user_id"]:
+            raise SendSafetyError("ACCOUNT_BINDING_MISMATCH", "Attestation belongs to a different immutable account identity")
+
+        journal = journal or _attempts.AttemptJournal()
+        attempt = journal.get(identity["provider_user_id"], draft_id)
+        if attempt is not None:
+            # Validate that this invocation carries the same approved identity.
+            attempt, _created = journal.create_or_get(
+                account_id=identity["provider_user_id"],
+                account_hash=_attestation.sha256(identity["email"].lower()),
+                thread_id=thread_id,
+                draft_id=draft_id,
+                attestation_id=str(record["attestation_id"]),
+                approval_ref=approval_ref,
+                superhuman_id=str(record["superhuman_id"]),
+                outgoing_fingerprint=str(record["fingerprint"]["exact"]),
+            )
+
+        if attempt is not None and (int(attempt["post_count"]) > 0 or attempt["state"] != "prepared"):
+            updated, state, warnings = _reconcile(
+                attempt,
+                account=identity["email"],
+                wait=wait,
+                journal=journal,
+            )
+            data = _attempt_result(updated, state, accepted=True)
+            if state["state"] in {lifecycle.FAILED, lifecycle.ABORTED, lifecycle.INCONSISTENT}:
+                code = "SEND_TERMINAL_FAILURE" if state["state"] != lifecycle.INCONSISTENT else "LIFECYCLE_INCONSISTENT"
+                return fail("send", [error("conflict", code, False, f"Attempt reconciled to {state['state']}")], warnings=warnings)
+            if not data["sent"] and state["state"] != lifecycle.SCHEDULED:
+                warnings.append("Attempt remains pending/unknown; no additional POST was made")
+            return ok("send", data, warnings=account_warnings + warnings)
+
+        if attempt is None:
+            # New attempts must pass the authoritative execute-time guard.
+            # Existing attempts reconcile even when the source is now pending
+            # or terminal; retry must not be mistaken for a second send.
+            _preflight(
+                thread_id,
+                draft_id,
+                account=identity["email"],
+                require_explicit_account=True,
+                allow_empty_subject=True,
+            )
+
+        # This is the mandatory post-grace, immediately pre-POST exact probe.
+        # Persist the attempt only after this probe succeeds, so a stale or
+        # unavailable renderer never strands the draft behind a no-POST row.
+        verified = _attestation.revalidate_for_send(
+            record,
+            account=identity["email"],
+            renderer=renderer,
+        )
+        if attempt is None:
+            attempt, _created = journal.create_or_get(
+                account_id=identity["provider_user_id"],
+                account_hash=_attestation.sha256(identity["email"].lower()),
+                thread_id=thread_id,
+                draft_id=draft_id,
+                attestation_id=str(record["attestation_id"]),
+                approval_ref=approval_ref,
+                superhuman_id=str(record["superhuman_id"]),
+                outgoing_fingerprint=str(record["fingerprint"]["exact"]),
+            )
+        attempt, claimed = journal.claim_post(attempt["attempt_id"])
+        if not claimed:
+            updated, state, warnings = _reconcile(
+                attempt,
+                account=identity["email"],
+                wait=wait,
+                journal=journal,
+            )
+            return ok("send", _attempt_result(updated, state, accepted=int(updated["post_count"]) > 0), warnings=account_warnings + warnings)
+
+        try:
+            _post_exact_payload(verified["outgoing_payload"], delay=delay)
+            attempt = journal.update(attempt["attempt_id"], state="request_accepted", response_class="http_2xx")
+        except Exception as transport_exc:
+            classified = classify_exception(transport_exc)
+            attempt = journal.update(
+                attempt["attempt_id"],
+                state="unknown",
+                response_class=classified["code"],
+                last_error=f"{type(transport_exc).__name__}",
+            )
+            # A lost response may have followed a successful server accept. Reconcile;
+            # never automatically POST again after the pre-network claim.
+
+        updated, state, warnings = _reconcile(
+            attempt,
+            account=identity["email"],
+            wait=wait,
+            journal=journal,
+        )
+        data = _attempt_result(updated, state, accepted=True)
+        if state["state"] in {lifecycle.FAILED, lifecycle.ABORTED, lifecycle.INCONSISTENT}:
+            code = "SEND_TERMINAL_FAILURE" if state["state"] != lifecycle.INCONSISTENT else "LIFECYCLE_INCONSISTENT"
+            return fail("send", [error("conflict", code, False, f"Attempt reconciled to {state['state']}")], warnings=warnings)
+        if not data["sent"] and state["state"] != lifecycle.SCHEDULED:
+            warnings.append("Request was accepted or outcome is unknown; provider delivery is not yet confirmed")
+        return ok("send", data, warnings=account_warnings + warnings)
+    except SendSafetyError as exc:
+        return _safety_failure("send", exc)
+    except _attestation.AttestationError as exc:
+        return fail("send", [error("conflict", exc.code, False, exc.hint)])
+    except _attempts.AttemptConflict as exc:
+        return fail("send", [error("conflict", "ATTEMPT_CONFLICT", False, str(exc))])
+    except Exception as exc:
+        return fail("send", [classify_exception(exc)])

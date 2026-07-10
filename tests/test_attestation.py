@@ -1,0 +1,290 @@
+"""Exact render attestation, signing, and stale-check tests."""
+from __future__ import annotations
+
+import base64
+import copy
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from unittest.mock import patch
+
+import pytest
+
+from superhuman_mail import attestation, lifecycle
+
+THREAD = "thread_fixture"
+DRAFT = "draft_fixture"
+SID = "sid.fixture"
+ACCOUNT = {"email": "owner@example.test", "provider_user_id": "user-fixture"}
+VERSION = "fixture-version"
+
+
+def _draft(**overrides):
+    value = {
+        "id": DRAFT,
+        "threadId": THREAD,
+        "action": "reply",
+        "from": {"email": ACCOUNT["email"], "name": "Owner"},
+        "to": [{"email": "recipient@example.test", "name": "Recipient"}],
+        "cc": [],
+        "bcc": [],
+        "subject": "Fixture",
+        "body": "<div>Hello</div>",
+        "quotedContent": "<div>Earlier</div>",
+        "quotedContentInlined": False,
+        "inReplyTo": "message_earlier",
+        "inReplyToRfc822Id": "<earlier@example.test>",
+        "references": ["<earlier@example.test>"],
+        "rfc822Id": "<draft@example.test>",
+        "attachments": [],
+    }
+    value.update(overrides)
+    return value
+
+
+def _preflight(draft=None, *, history=42):
+    value = draft or _draft()
+    return {
+        "thread_id": THREAD,
+        "draft_id": DRAFT,
+        "draft": value,
+        "wrapper": {"draft": value},
+        "outgoing": {},
+        "warnings": [],
+        "lifecycle": {
+            "account": ACCOUNT,
+            "state": lifecycle.ACTIVE,
+            "observations": [{"source": "superhuman_userdata_api", "history_id": history}],
+        },
+    }
+
+
+def _payload(html="<div>Hello</div><br><div>Signature</div>"):
+    return {
+        "headers": [
+            {"name": "X-Mailer", "value": f"Superhuman Desktop ({VERSION})"},
+            {"name": "X-Superhuman-ID", "value": SID},
+            {"name": "X-Superhuman-Draft-ID", "value": DRAFT},
+        ],
+        "superhuman_id": SID,
+        "rfc822_id": "<draft@example.test>",
+        "thread_id": THREAD,
+        "message_id": DRAFT,
+        "in_reply_to": "message_earlier",
+        "from": {"email": ACCOUNT["email"], "name": "Owner"},
+        "to": [{"email": "recipient@example.test", "name": "Recipient"}],
+        "cc": [],
+        "bcc": [],
+        "subject": "Fixture",
+        "html_body": html,
+        "attachments": [],
+    }
+
+
+class FakeRenderer:
+    def __init__(self, *, draft=None, payload=None, version=VERSION, dirty=False, events=None):
+        self.draft = draft or _draft()
+        self.payload = payload or _payload()
+        self.version = version
+        self.dirty = dirty
+        self.events = events or []
+        self.calls = []
+
+    def probe(self, request, *, output_dir: Path):
+        self.calls.append(copy.deepcopy(request))
+        output_dir.mkdir(parents=True, exist_ok=True)
+        compose = output_dir / "compose.png"
+        outgoing = output_dir / "outgoing.png"
+        compose.write_bytes(b"compose")
+        outgoing.write_bytes(b"outgoing")
+        return {
+            "account_email": ACCOUNT["email"],
+            "thread_id": THREAD,
+            "draft_id": DRAFT,
+            "dirty": self.dirty,
+            "live_draft_json": copy.deepcopy(self.draft),
+            "editor_html": "<div>Hello</div>",
+            "outgoing_payload": copy.deepcopy(self.payload),
+            "signature_settings": {"signature_id": "signature-fixture"},
+            "app_version": "1041.0.15",
+            "web_version": self.version,
+            "surface": "superhuman-desktop",
+            "network_events": copy.deepcopy(self.events),
+            "screenshots": [str(compose), str(outgoing)],
+        }
+
+
+@pytest.fixture(autouse=True)
+def _key_and_version(monkeypatch, tmp_path):
+    monkeypatch.setenv("SHM_ATTESTATION_KEY", base64.urlsafe_b64encode(b"k" * 32).decode())
+    monkeypatch.setenv("SHM_RENDERER_ALLOW_VERSIONS", VERSION)
+    monkeypatch.setenv("SHM_STATE_DIR", str(tmp_path / "state"))
+
+
+def _create(tmp_path, renderer=None):
+    renderer = renderer or FakeRenderer()
+    with patch("superhuman_mail.send._superhuman_id", return_value=SID):
+        with patch("superhuman_mail.send._preflight", side_effect=[_preflight(), _preflight()]):
+            return attestation.create(
+                THREAD,
+                DRAFT,
+                account=ACCOUNT["email"],
+                output_dir=tmp_path / "preview",
+                renderer=renderer,
+            )
+
+
+def test_create_binds_exact_source_editor_payload_versions_and_screenshots(tmp_path):
+    renderer = FakeRenderer()
+    record = _create(tmp_path, renderer)
+    assert record["send_eligible"] is True
+    assert record["confidence"] == "exact_superhuman_renderer"
+    assert record["superhuman_id"] == SID
+    assert record["fingerprint"]["fields"]["outgoing_payload"] == attestation.sha256(
+        attestation.canonical_bytes(_payload())
+    )
+    assert len(record["screenshots"]) == 2
+    assert renderer.calls[0]["superhuman_id"] == SID
+    attestation.verify(record)
+    loaded = attestation.load(record["attestation_id"])
+    assert loaded["attestation_id"] == record["attestation_id"]
+
+
+def test_safe_show_verifies_binding_and_redacts_all_mail_content(tmp_path):
+    record = _create(tmp_path)
+    summary = attestation.show_safe(
+        record["attestation_id"],
+        account=ACCOUNT["email"],
+        thread_id=THREAD,
+        draft_id=DRAFT,
+    )
+    assert summary["signature_valid"] is True
+    assert summary["usable"] is True
+    assert summary["binding_match"] is True
+    assert summary["summary"] == {
+        "to_count": 1,
+        "cc_count": 0,
+        "bcc_count": 0,
+        "attachment_count": 0,
+        "empty_subject": False,
+        "scheduled": False,
+        "has_quote": True,
+    }
+    serialized = str(summary)
+    assert "Hello" not in serialized
+    assert "recipient@example.test" not in serialized
+    assert "Fixture" not in serialized
+    assert ACCOUNT["provider_user_id"] not in serialized
+    assert SID not in serialized
+
+    with pytest.raises(attestation.AttestationError) as caught:
+        attestation.show_safe(record["attestation_id"], draft_id="draft_other")
+    assert caught.value.code == "ATTESTATION_BINDING_MISMATCH"
+
+
+def test_safe_show_reports_valid_but_expired_as_unusable(tmp_path):
+    record = _create(tmp_path)
+    expired = copy.deepcopy(record)
+    expired["expires_at"] = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
+    expired = attestation._seal(attestation._unsigned(expired))
+    attestation.save(expired)
+    summary = attestation.show_safe(expired["attestation_id"])
+    assert summary["signature_valid"] is True
+    assert summary["expired"] is True
+    assert summary["usable"] is False
+
+
+def test_tampered_or_expired_attestation_is_rejected(tmp_path):
+    record = _create(tmp_path)
+    tampered = copy.deepcopy(record)
+    tampered["outgoing_payload"]["subject"] = "Changed"
+    with pytest.raises(attestation.AttestationError, match="canonical content"):
+        attestation.verify(tampered)
+
+    expired = copy.deepcopy(record)
+    expired["expires_at"] = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
+    # Re-seal to isolate expiry behavior.
+    expired = attestation._seal(attestation._unsigned(expired))
+    with pytest.raises(attestation.AttestationError, match="expired"):
+        attestation.verify(expired)
+
+
+def test_dirty_renderer_version_mismatch_and_write_event_fail_closed(tmp_path):
+    cases = [
+        (FakeRenderer(dirty=True), "DIRTY_RENDERER_DRAFT"),
+        (FakeRenderer(version="new-unreviewed-version"), "RENDERER_VERSION_UNSUPPORTED"),
+        (FakeRenderer(events=[{"method": "POST", "url": "https://mail.superhuman.com/~backend/messages/send"}]), "RENDERER_WROTE_LIVE_STATE"),
+    ]
+    for index, (renderer, code) in enumerate(cases):
+        with patch("superhuman_mail.send._superhuman_id", return_value=SID):
+            with patch("superhuman_mail.send._preflight", return_value=_preflight()):
+                with pytest.raises(attestation.AttestationError) as caught:
+                    attestation.create(
+                        THREAD,
+                        DRAFT,
+                        account=ACCOUNT["email"],
+                        output_dir=tmp_path / f"case-{index}",
+                        renderer=renderer,
+                    )
+        assert caught.value.code == code
+
+
+def test_unreadable_attachment_is_not_send_eligible(tmp_path):
+    attached = _draft(attachments=[{
+        "uuid": "attachment-fixture",
+        "name": "file.pdf",
+        "type": "application/pdf",
+        "size": 10,
+        "source": {"type": "remote-without-digest"},
+    }])
+    with patch("superhuman_mail.send._superhuman_id", return_value=SID):
+        with patch("superhuman_mail.send._preflight", return_value=_preflight(attached)):
+            with pytest.raises(attestation.AttestationError) as caught:
+                attestation.create(
+                    THREAD,
+                    DRAFT,
+                    account=ACCOUNT["email"],
+                    output_dir=tmp_path / "attachment",
+                    renderer=FakeRenderer(draft=attached),
+                )
+    assert caught.value.code == "UNATTESTABLE_ATTACHMENT"
+
+
+def test_send_time_second_probe_returns_fresh_exact_payload(tmp_path):
+    record = _create(tmp_path)
+    renderer = FakeRenderer()
+    with patch("superhuman_mail.send._preflight", side_effect=[_preflight(), _preflight()]):
+        verified = attestation.revalidate_for_send(
+            record,
+            account=ACCOUNT["email"],
+            renderer=renderer,
+            output_dir=tmp_path / "send-time",
+        )
+    assert verified["outgoing_payload"] == _payload()
+    assert verified["outgoing_payload_bytes"] == attestation.canonical_bytes(_payload())
+    assert renderer.calls[0]["superhuman_id"] == SID
+
+
+def test_stale_source_blocks_before_second_probe(tmp_path):
+    record = _create(tmp_path)
+    changed = _preflight(_draft(to=[{"email": "different@example.test"}]))
+    renderer = FakeRenderer()
+    with patch("superhuman_mail.send._preflight", return_value=changed):
+        with pytest.raises(attestation.AttestationError) as caught:
+            attestation.revalidate_for_send(record, account=ACCOUNT["email"], renderer=renderer)
+    assert caught.value.code == "STALE_ATTESTATION"
+    assert renderer.calls == []
+
+
+def test_renderer_payload_drift_after_approval_blocks(tmp_path):
+    record = _create(tmp_path)
+    renderer = FakeRenderer(payload=_payload(html="<div>Changed transport bytes</div>"))
+    with patch("superhuman_mail.send._preflight", side_effect=[_preflight(), _preflight()]):
+        with pytest.raises(attestation.AttestationError) as caught:
+            attestation.revalidate_for_send(
+                record,
+                account=ACCOUNT["email"],
+                renderer=renderer,
+                output_dir=tmp_path / "drift",
+            )
+    assert caught.value.code == "STALE_ATTESTATION"
+    assert "outgoing_payload" in caught.value.hint
