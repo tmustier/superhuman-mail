@@ -21,7 +21,7 @@ SCHEMA_VERSION = 1
 ADAPTER_VERSION = "superhuman-cdp-v1"
 DEFAULT_TTL_SECONDS = 15 * 60
 DEFAULT_CDP_URL = "http://127.0.0.1:9222"
-DEFAULT_ALLOWED_WEB_VERSIONS = {"2026-07-09T19:06:39Z"}
+DEFAULT_ALLOWED_RENDERER_BUILDS = {("1041.0.15", "2026-07-09T19:06:39Z")}
 _WRITE_URL_MARKERS = (
     "/messages/send",
     "userdata.writemessage",
@@ -165,8 +165,11 @@ def attachment_digests(draft: dict[str, Any]) -> dict[str, str]:
             )
         try:
             request = urllib.request.Request(str(url), method="GET")
+            digest_hash = hashlib.sha256()
             with urllib.request.urlopen(request, timeout=30) as response:
-                results[identifier] = sha256(response.read())
+                while chunk := response.read(1024 * 1024):
+                    digest_hash.update(chunk)
+            results[identifier] = "sha256:" + digest_hash.hexdigest()
         except Exception as exc:
             raise AttestationError(
                 "UNATTESTABLE_ATTACHMENT",
@@ -175,9 +178,21 @@ def attachment_digests(draft: dict[str, Any]) -> dict[str, str]:
     return results
 
 
-def _allowed_versions() -> set[str]:
-    raw = os.environ.get("SHM_RENDERER_ALLOW_VERSIONS")
-    return {item.strip() for item in raw.split(",") if item.strip()} if raw else set(DEFAULT_ALLOWED_WEB_VERSIONS)
+def _renderer_build_allowed(app_version: str, web_version: str) -> bool:
+    raw_builds = os.environ.get("SHM_RENDERER_ALLOW_BUILDS")
+    if raw_builds:
+        allowed: set[tuple[str, str]] = set()
+        for item in raw_builds.split(","):
+            app, separator, web = item.strip().partition("@")
+            if separator and app and web:
+                allowed.add((app, web))
+        return (app_version, web_version) in allowed
+    # Web-only override is retained for deterministic fixture tests and must be
+    # an explicit operator choice; production defaults bind both versions.
+    raw_versions = os.environ.get("SHM_RENDERER_ALLOW_VERSIONS")
+    if raw_versions:
+        return web_version in {item.strip() for item in raw_versions.split(",") if item.strip()}
+    return (app_version, web_version) in DEFAULT_ALLOWED_RENDERER_BUILDS
 
 
 def _network_writes(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -308,6 +323,14 @@ def verify(record: dict[str, Any], *, require_unexpired: bool = True) -> None:
     ).hexdigest()
     if not hmac.compare_digest(signature, expected_signature):
         raise AttestationError("ATTESTATION_TAMPERED", "Attestation signature is invalid")
+    for screenshot in record.get("screenshots") or []:
+        path = Path(str(screenshot.get("path") or ""))
+        expected_hash = str(screenshot.get("sha256") or "")
+        if not path.is_file() or not expected_hash or not hmac.compare_digest(sha256(path.read_bytes()), expected_hash):
+            raise AttestationError(
+                "ATTESTATION_ARTIFACT_MISMATCH",
+                "An attested screenshot is missing or differs from its signed hash",
+            )
     if require_unexpired and _parse_iso(str(record["expires_at"])) <= _now():
         raise AttestationError("ATTESTATION_EXPIRED", "Render attestation has expired; preview and approve again")
     if not record.get("send_eligible"):
@@ -407,6 +430,7 @@ def show_safe(
             "empty_subject": not bool(str(source.get("subject") or "").strip()),
             "scheduled": bool(source.get("scheduled_for")),
             "has_quote": bool(source.get("quoted_content")),
+            "editor_normalized_changed": bool((record.get("normalization") or {}).get("changed")),
         },
     }
 
@@ -459,9 +483,13 @@ def _validate_probe(
     if _network_writes(list(result.get("network_events") or [])):
         raise AttestationError("RENDERER_WROTE_LIVE_STATE", "Renderer probe observed a prohibited write request")
 
-    version = str(result.get("web_version") or "")
-    if version not in _allowed_versions():
-        raise AttestationError("RENDERER_VERSION_UNSUPPORTED", f"Superhuman web code version is not allowlisted: {version or 'unknown'}")
+    app_version = str(result.get("app_version") or "")
+    web_version = str(result.get("web_version") or "")
+    if not _renderer_build_allowed(app_version, web_version):
+        raise AttestationError(
+            "RENDERER_VERSION_UNSUPPORTED",
+            f"Superhuman renderer build is not allowlisted: {app_version or 'unknown'}@{web_version or 'unknown'}",
+        )
     return live_source, payload
 
 
@@ -584,6 +612,11 @@ def create(
         "delay_seconds": delay,
         "source": live_source,
         "editor_html": editor_html,
+        "normalization": {
+            "changed": source_a["body"].encode() != editor_html.encode(),
+            "raw_body_sha256": sha256(source_a["body"]),
+            "editor_html_sha256": sha256(editor_html),
+        },
         "outgoing_payload": payload,
         "signature_settings": signature_settings,
         "renderer": {

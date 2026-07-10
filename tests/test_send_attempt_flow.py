@@ -216,6 +216,30 @@ def test_unknown_outcome_remains_non_sent_and_cannot_claim_again(tmp_path):
     assert claimed is False
 
 
+def test_status_without_local_attempt_waits_for_native_job_provider_confirmation(tmp_path):
+    journal = AttemptJournal(tmp_path / "attempts.sqlite3")
+    states = [
+        _observe(_state(lifecycle.PENDING_UNDO)),
+        _observe(_state(lifecycle.BACKEND_CONFIRMED)),
+        _observe(_state(lifecycle.PROVIDER_CONFIRMED, provider_id="message_fixture")),
+    ]
+    with patch("superhuman_mail.send.lifecycle.resolve_account", return_value=(ACCOUNT, [])):
+        with patch("superhuman_mail.send.lifecycle.observe", side_effect=states) as observe:
+            with patch("superhuman_mail.send.time.monotonic", return_value=0):
+                with patch("superhuman_mail.send.time.sleep"):
+                    result = send.status(
+                        THREAD,
+                        DRAFT,
+                        account=ACCOUNT["email"],
+                        wait=120,
+                        journal=journal,
+                    )
+    assert observe.call_count == 3
+    assert result["status"] == "succeeded"
+    assert result["data"]["sent"] is True
+    assert result["data"]["provider_message_id"] == "message_fixture"
+
+
 def test_future_scheduled_job_is_success_without_sent_claim(tmp_path):
     journal = AttemptJournal(tmp_path / "attempts.sqlite3")
     result, _post = _run(journal, _state(lifecycle.SCHEDULED))

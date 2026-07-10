@@ -745,6 +745,19 @@ def _build_parser() -> _ShmParser:
 # ---------------------------------------------------------------------------
 
 
+def _typed_send_exit(data: dict[str, Any]) -> int:
+    if data.get("sent") or data.get("state") == "scheduled":
+        return 0
+    if data.get("state") in {
+        "send_requested",
+        "send_pending_undo",
+        "sent_backend_confirmed",
+        "unknown",
+    }:
+        return 4
+    return 1
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     raw_argv = list(argv) if argv is not None else list(sys.argv[1:])
@@ -882,8 +895,8 @@ def main(argv: list[str] | None = None) -> int:
                 account=args.account,
                 wait=args.wait,
             )
-            if result["status"] == "succeeded" and not result["data"]["sent"] and result["data"]["state"] != "scheduled":
-                return emit(result, exit_code=4)
+            if result["status"] == "succeeded":
+                return emit(result, exit_code=_typed_send_exit(result["data"]))
             return emit(result)
         elif args.confirm:
             result = _send.execute(
@@ -895,8 +908,8 @@ def main(argv: list[str] | None = None) -> int:
                 approval_ref=args.approval_ref,
                 wait=args.wait,
             )
-            if result["status"] == "succeeded" and not result["data"]["sent"] and result["data"]["state"] != "scheduled":
-                return emit(result, exit_code=4)
+            if result["status"] == "succeeded":
+                return emit(result, exit_code=_typed_send_exit(result["data"]))
             return emit(result)
 
     # -- attestation --

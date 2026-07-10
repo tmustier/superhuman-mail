@@ -133,6 +133,13 @@ def _create(tmp_path, renderer=None):
             )
 
 
+def test_production_allowlist_binds_app_and_web_versions(monkeypatch):
+    monkeypatch.delenv("SHM_RENDERER_ALLOW_VERSIONS", raising=False)
+    monkeypatch.delenv("SHM_RENDERER_ALLOW_BUILDS", raising=False)
+    assert attestation._renderer_build_allowed("1041.0.15", "2026-07-09T19:06:39Z") is True
+    assert attestation._renderer_build_allowed("1042.0.0", "2026-07-09T19:06:39Z") is False
+
+
 def test_create_binds_exact_source_editor_payload_versions_and_screenshots(tmp_path):
     renderer = FakeRenderer()
     record = _create(tmp_path, renderer)
@@ -168,6 +175,7 @@ def test_safe_show_verifies_binding_and_redacts_all_mail_content(tmp_path):
         "empty_subject": False,
         "scheduled": False,
         "has_quote": True,
+        "editor_normalized_changed": False,
     }
     serialized = str(summary)
     assert "Hello" not in serialized
@@ -191,6 +199,14 @@ def test_safe_show_reports_valid_but_expired_as_unusable(tmp_path):
     assert summary["signature_valid"] is True
     assert summary["expired"] is True
     assert summary["usable"] is False
+
+
+def test_tampered_screenshot_is_rejected_even_when_record_signature_is_valid(tmp_path):
+    record = _create(tmp_path)
+    Path(record["screenshots"][0]["path"]).write_bytes(b"tampered")
+    with pytest.raises(attestation.AttestationError) as caught:
+        attestation.verify(record)
+    assert caught.value.code == "ATTESTATION_ARTIFACT_MISMATCH"
 
 
 def test_tampered_or_expired_attestation_is_rejected(tmp_path):
@@ -226,6 +242,30 @@ def test_dirty_renderer_version_mismatch_and_write_event_fail_closed(tmp_path):
                         renderer=renderer,
                     )
         assert caught.value.code == code
+
+
+def test_readable_attachment_bytes_are_stream_hashed():
+    attached = _draft(attachments=[{
+        "uuid": "attachment-fixture",
+        "source": {"type": "upload-firebase", "url": "https://example.test/file"},
+    }])
+
+    class Response:
+        def __init__(self):
+            self.chunks = iter([b"abc", b"def", b""])
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, _size):
+            return next(self.chunks)
+
+    with patch("superhuman_mail.attestation.urllib.request.urlopen", return_value=Response()):
+        digests = attestation.attachment_digests(attached)
+    assert digests["attachment-fixture"] == attestation.sha256(b"abcdef")
 
 
 def test_unreadable_attachment_is_not_send_eligible(tmp_path):

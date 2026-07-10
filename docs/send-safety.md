@@ -103,7 +103,7 @@ shm attestation show ID_OR_PATH \
   --draft-id DRAFT
 ```
 
-The inspector verifies canonical ID/HMAC, expiry, and optional binding. It exposes counts, booleans, renderer versions, screenshot hashes/paths, and the overall fingerprint only. Valid-but-expired artifacts return `usable: false`; tamper or binding mismatch fails.
+The inspector verifies canonical ID/HMAC, screenshot hashes, expiry, and optional binding. It exposes counts, booleans (including `editor_normalized_changed`), renderer versions, screenshot hashes/paths, and the overall fingerprint only. Valid-but-expired artifacts return `usable: false`; tamper or binding mismatch fails.
 
 ### 4. Grace period and strict execution
 
@@ -172,7 +172,8 @@ These environment variables exist for controlled rollout/testing:
 - `SHM_STATE_DIR`
 - `SHM_RENDERER_CDP_URL`
 - `SHM_RENDERER_WINDOW_ID`
-- `SHM_RENDERER_ALLOW_VERSIONS`
+- `SHM_RENDERER_ALLOW_BUILDS` (`APP_VERSION@WEB_VERSION`; production rollout override)
+- `SHM_RENDERER_ALLOW_VERSIONS` (web-only fixture/testing override)
 - `SHM_ATTESTATION_KEY` (tests only; do not use as a production secret path)
 
 A new Superhuman code version fails closed until its renderer contract and non-sending E2E are reviewed.

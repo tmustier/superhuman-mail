@@ -30,6 +30,21 @@ def test_send_status_subcommand_spelling_maps_to_read_only_status(capsys):
     assert output["data"]["sent"] is False
 
 
+def test_active_or_terminal_failure_status_exits_one(capsys):
+    for state in ("active_draft", "send_failed", "send_aborted", "discarded", "inconsistent"):
+        with patch("superhuman_mail.cli._send.status", return_value=ok("send.status", _send_data(state))):
+            code = main(["send", "status", THREAD, DRAFT, "--account", ACCOUNT])
+        assert code == 1
+        capsys.readouterr()
+
+
+def test_scheduled_status_exits_zero_without_sent_claim(capsys):
+    with patch("superhuman_mail.cli._send.status", return_value=ok("send.status", _send_data("scheduled"))):
+        code = main(["send", "status", THREAD, DRAFT, "--account", ACCOUNT])
+    assert code == 0
+    assert json.loads(capsys.readouterr().out)["data"]["sent"] is False
+
+
 def test_provider_confirmed_status_exits_zero(capsys):
     with patch("superhuman_mail.cli._send.status", return_value=ok("send.status", _send_data("sent_provider_confirmed", sent=True))):
         code = main(["send", "status", THREAD, DRAFT, "--account", ACCOUNT])

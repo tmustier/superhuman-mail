@@ -228,8 +228,14 @@ def classify(
     )
     has_failure = _has_failure(job)
     has_abort = _has_abort(job)
-    backend_success = bool(_field(job, "sentAt") and _field(job, "messageId", "message_id"))
-    contradictory = sum(bool(item) for item in (backend_success, has_failure, has_abort)) > 1 or linkage_conflict
+    sent_at_present = bool(_field(job, "sentAt"))
+    backend_success = bool(sent_at_present and _field(job, "messageId", "message_id"))
+    partial_terminal_success = (sent_at_present or bool(_field(job, "sendVerifiedAt", "send_verified_at"))) and not backend_success
+    contradictory = (
+        sum(bool(item) for item in (backend_success, has_failure, has_abort)) > 1
+        or linkage_conflict
+        or partial_terminal_success
+    )
     consistency = "conflicting" if contradictory or (provider is not None and (has_failure or has_abort)) else "matched"
 
     if provider is not None:
@@ -255,10 +261,10 @@ def classify(
     elif job:
         send_at = _parse_time(_field(job, "sendAt", "send_at"))
         scheduled_for = _parse_time(_field(draft, "scheduledFor", "scheduled_for"))
-        if scheduled_for and send_at and send_at > datetime.now(timezone.utc):
-            state = SCHEDULED
-        elif bool(_field(job, "notSentToServer", "not_sent_to_server")):
+        if bool(_field(job, "notSentToServer", "not_sent_to_server")):
             state = REQUESTED
+        elif scheduled_for and send_at and send_at > datetime.now(timezone.utc):
+            state = SCHEDULED
         elif send_at and send_at > datetime.now(timezone.utc):
             state = PENDING_UNDO
         else:

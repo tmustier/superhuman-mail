@@ -141,6 +141,17 @@ def test_optimistic_and_undo_jobs_are_nonterminal():
     assert optimistic["send_blocked"] and undo["send_blocked"]
 
 
+def test_not_sent_to_server_never_counts_as_an_accepted_schedule():
+    future = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
+    draft = _userdata()["messages"][DRAFT]["draft"] | {"scheduledFor": future}
+    result = _classify(
+        draft=draft,
+        job={"sendAt": future, "superhumanId": SID, "notSentToServer": True},
+    )
+    assert result["state"] == lifecycle.REQUESTED
+    assert result["outbound_evidence"] is False
+
+
 @pytest.mark.parametrize(
     ("job", "expected"),
     [
@@ -159,6 +170,12 @@ def test_discarded_source_is_terminal_not_outbound():
     result = _classify(discarded="2026-07-10T12:00:00Z")
     assert result["state"] == lifecycle.DISCARDED
     assert result["terminal"] is True
+    assert result["outbound_evidence"] is False
+
+
+def test_partial_backend_terminal_evidence_is_inconsistent():
+    result = _classify(job={"superhumanId": SID, "sentAt": "2026-07-10T12:00:00Z"})
+    assert result["state"] == lifecycle.INCONSISTENT
     assert result["outbound_evidence"] is False
 
 

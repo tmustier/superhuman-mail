@@ -466,21 +466,53 @@ def status(
                 journal=journal,
             )
             return ok("send.status", _attempt_result(updated, state, accepted=int(updated["post_count"]) > 0), warnings=warnings + observed_warnings)
-        state, _wrapper, observed_warnings = lifecycle.observe(
-            thread_id,
-            draft_id,
-            account=identity["email"],
-            require_explicit_account=True,
-        )
+        deadline = time.monotonic() + max(0.0, wait)
+        interval = 0.25
+        observed_warnings: list[str] = []
+        while True:
+            state, _wrapper, current_warnings = lifecycle.observe(
+                thread_id,
+                draft_id,
+                account=identity["email"],
+                require_explicit_account=True,
+            )
+            observed_warnings.extend(item for item in current_warnings if item not in observed_warnings)
+            state_name = state["state"]
+            if state_name in {
+                lifecycle.ACTIVE,
+                lifecycle.SCHEDULED,
+                lifecycle.PROVIDER_CONFIRMED,
+                lifecycle.FAILED,
+                lifecycle.ABORTED,
+                lifecycle.DISCARDED,
+                lifecycle.INCONSISTENT,
+            }:
+                break
+            now = time.monotonic()
+            if now >= deadline:
+                break
+            time.sleep(min(interval, max(0.0, deadline - now)))
+            interval = min(interval * 2, 5.0)
         return ok("send.status", {
             "attempt_id": None,
+            "attestation_id": None,
             "thread_id": thread_id,
             "draft_id": draft_id,
             "state": state["state"],
-            "accepted": False,
+            "accepted": state["state"] in {
+                lifecycle.SCHEDULED,
+                lifecycle.REQUESTED,
+                lifecycle.PENDING_UNDO,
+                lifecycle.BACKEND_CONFIRMED,
+                lifecycle.PROVIDER_CONFIRMED,
+                lifecycle.FAILED,
+                lifecycle.ABORTED,
+            },
             "sent": state["state"] == lifecycle.PROVIDER_CONFIRMED,
             "provider_confirmed": state["state"] == lifecycle.PROVIDER_CONFIRMED,
             "outbound_evidence": state["outbound_evidence"],
+            "superhuman_id": (state.get("send_job") or {}).get("superhuman_id"),
+            "provider_message_id": (state.get("provider_message") or {}).get("id"),
             "idempotency_scope": _attempts.IDEMPOTENCY_SCOPE,
             "lifecycle": state,
         }, warnings=warnings + observed_warnings)
