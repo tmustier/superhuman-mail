@@ -17,21 +17,33 @@ function arg(name, fallback) {
   return index >= 0 && process.argv[index + 1] ? process.argv[index + 1] : fallback;
 }
 
-const READ_ONLY_POST_ACTIONS = [
-  "userdata.getthreads", "userdata.read", "userdata.searchhistory", "userdata.sync",
-  "autolabels.preview", "labels.recentchanges", "labels.resync",
-  "autodrafts.previeweascheduling", "smartsend.gettimerange",
-  "sessions.getcsrftoken", "sessions.gettokens", "teams.caninvite", "teams.classify",
-  "teams.getbillingfeaturesbysku", "teams.members", "teams.suggest", "links.content",
-  "translate.detectlanguage", "users.getreferral", "users.refreshaliases",
-];
+const READ_ONLY_POST_ROUTES = {
+  "https://mail.superhuman.com": [
+    "/~backend/v3/userdata.getthreads", "/~backend/v3/userdata.read",
+    "/~backend/v3/userdata.searchhistory", "/~backend/v3/userdata.sync",
+    "/~backend/v3/autolabels.preview", "/~backend/v3/labels.recentchanges",
+    "/~backend/v3/labels.resync", "/~backend/v3/autodrafts.previeweascheduling",
+    "/~backend/v3/smartsend.gettimerange", "/~backend/v3/teams.caninvite",
+    "/~backend/v3/teams.classify", "/~backend/v3/teams.getbillingfeaturesbysku",
+    "/~backend/v3/teams.members", "/~backend/v3/teams.suggest",
+    "/~backend/v3/links.content", "/~backend/v3/translate.detectlanguage",
+    "/~backend/v3/users.getreferral", "/~backend/v3/users.refreshaliases",
+  ],
+  "https://accounts.superhuman.com": [
+    "/~backend/v3/sessions.getcsrftoken", "/~backend/v3/sessions.gettokens",
+  ],
+};
 
 function requestDisposition(methodValue, urlValue) {
   const method = String(methodValue || "GET").toUpperCase();
   if (["GET", "HEAD", "OPTIONS"].includes(method)) return "continue";
-  let action = "";
-  try { action = new URL(String(urlValue || "")).pathname.replace(/\/$/, "").split("/").pop().toLowerCase(); } catch (_) {}
-  return method === "POST" && READ_ONLY_POST_ACTIONS.includes(action) ? "continue" : "fail";
+  try {
+    const parsed = new URL(String(urlValue || ""));
+    const route = parsed.pathname.replace(/\/$/, "").toLowerCase();
+    return method === "POST" && (READ_ONLY_POST_ROUTES[parsed.origin] || []).includes(route) ? "continue" : "fail";
+  } catch (_) {
+    return "fail";
+  }
 }
 
 const RENDERER_CONTRACT = {
@@ -46,7 +58,7 @@ const RENDERER_CONTRACT = {
   mutates_mail_state: false,
   blocks_non_idempotent_before_dispatch: true,
   network_offline_during_render: true,
-  read_only_post_actions: READ_ONLY_POST_ACTIONS,
+  read_only_post_routes: READ_ONLY_POST_ROUTES,
 };
 if (process.argv.includes("--print-contract")) {
   process.stdout.write(JSON.stringify(RENDERER_CONTRACT));

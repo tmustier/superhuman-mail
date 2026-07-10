@@ -417,6 +417,44 @@ def _reconcile(
     last_state: dict[str, Any] | None = None
     last_attempt = attempt
 
+    if (
+        attempt.get("state") == lifecycle.PROVIDER_CONFIRMED
+        and attempt.get("provider_message_id")
+    ):
+        tombstone = {
+            "account": {
+                "email": account,
+                "provider_user_id": attempt["account_id"],
+            },
+            "thread_id": attempt["thread_id"],
+            "draft_id": attempt["draft_id"],
+            "state": lifecycle.PROVIDER_CONFIRMED,
+            "terminal": True,
+            "send_blocked": True,
+            "outbound_evidence": True,
+            "confidence": "provider_confirmed_journal_tombstone",
+            "consistency": "journal_tombstone",
+            "timestamps": {
+                "sent_at": attempt.get("backend_sent_at"),
+                "provider_message_at": attempt.get("provider_sent_at"),
+            },
+            "send_job": {
+                "superhuman_id": attempt.get("superhuman_id"),
+                "present": True,
+            },
+            "provider_message": {
+                "id": attempt["provider_message_id"],
+                "thread_id": attempt["thread_id"],
+                "labels": ["SENT"],
+            },
+            "observations": [{
+                "source": "local_attempt_journal",
+                "observed_at": datetime_now_iso(),
+            }],
+        }
+        warnings.append("Using immutable provider-confirmed journal tombstone")
+        return attempt, tombstone, warnings
+
     while True:
         state, _wrapper, observed_warnings = lifecycle.observe(
             attempt["thread_id"],

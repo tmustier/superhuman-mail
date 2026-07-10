@@ -232,7 +232,7 @@ def test_recorded_provider_confirmation_is_not_downgraded_by_stale_cache(tmp_pat
             with patch("superhuman_mail.send._attestation.verify"):
                 with patch("superhuman_mail.send._approval.load_and_verify", return_value=({}, _approval())):
                     with patch("superhuman_mail.send.lifecycle.resolve_account", return_value=(ACCOUNT, [])):
-                        with patch("superhuman_mail.send.lifecycle.observe", return_value=_observe(_state(lifecycle.ACTIVE))):
+                        with patch("superhuman_mail.send.lifecycle.observe", side_effect=LookupError("draft removed")) as observe:
                             with patch("superhuman_mail.send._post_exact_payload") as post:
                                 result = send.execute(
                                     THREAD,
@@ -246,7 +246,9 @@ def test_recorded_provider_confirmation_is_not_downgraded_by_stale_cache(tmp_pat
     assert result["status"] == "succeeded"
     assert result["data"]["sent"] is True
     assert result["data"]["state"] == lifecycle.PROVIDER_CONFIRMED
-    assert result["data"]["lifecycle"]["consistency"] == "observation_lag"
+    assert result["data"]["lifecycle"]["consistency"] == "journal_tombstone"
+    assert "tombstone" in result["warnings"][0]
+    observe.assert_not_called()
     preflight.assert_not_called()
     post.assert_not_called()
 

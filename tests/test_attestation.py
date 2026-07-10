@@ -147,7 +147,10 @@ def test_bundled_renderer_declares_versioned_payload_contract():
     assert contract["mutates_mail_state"] is False
     assert contract["blocks_non_idempotent_before_dispatch"] is True
     assert contract["network_offline_during_render"] is True
-    assert set(contract["read_only_post_actions"]) == set(attestation._READ_ONLY_POST_ACTIONS)
+    assert {
+        origin: set(routes)
+        for origin, routes in contract["read_only_post_routes"].items()
+    } == attestation._READ_ONLY_POST_ROUTES
     assert contract["reminder"] == "persisted_draft_only_current_build"
     assert "html_body" in contract["outgoing_fields"]
     assert "reminder" not in contract["outgoing_fields"]
@@ -157,6 +160,8 @@ def test_bundled_renderer_policy_aborts_write_before_dispatch():
     script = Path(attestation.__file__).with_name("renderer_probe.js")
     requests = [
         {"method": "POST", "url": "https://mail.superhuman.com/~backend/v3/userdata.read"},
+        {"method": "POST", "url": "https://evil.example/~backend/v3/userdata.read"},
+        {"method": "POST", "url": "https://evil.example/~backend/v3/sessions.getTokens"},
         {"method": "POST", "url": "https://mail.superhuman.com/~backend/v3/userdata.writeMessage"},
         {"method": "DELETE", "url": "https://example.test/anything"},
     ]
@@ -168,7 +173,7 @@ def test_bundled_renderer_policy_aborts_write_before_dispatch():
         check=True,
     )
     decisions = json.loads(completed.stdout)
-    assert [item["disposition"] for item in decisions] == ["continue", "fail", "fail"]
+    assert [item["disposition"] for item in decisions] == ["continue", "fail", "fail", "fail", "fail"]
     source = script.read_text()
     assert 'this.send("Fetch.failRequest"' in source
     assert 'client.send("Page.bringToFront"' not in source
@@ -179,10 +184,12 @@ def test_probe_network_policy_fails_closed_on_unknown_non_idempotent_requests():
     events = [
         {"method": "GET", "url": "https://mail.superhuman.com/image.png"},
         {"method": "POST", "url": "https://mail.superhuman.com/~backend/v3/userdata.read"},
+        {"method": "POST", "url": "https://evil.example/~backend/v3/userdata.read"},
         {"method": "POST", "url": "https://mail.superhuman.com/~backend/v3/newMutation.unknown"},
         {"method": "DELETE", "url": "https://example.test/anything"},
     ]
     assert attestation._network_writes(events) == [
+        {"method": "POST", "url": "https://evil.example/~backend/v3/userdata.read"},
         {"method": "POST", "url": "https://mail.superhuman.com/~backend/v3/newmutation.unknown"},
         {"method": "DELETE", "url": "https://example.test/anything"},
     ]

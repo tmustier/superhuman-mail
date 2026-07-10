@@ -29,28 +29,32 @@ _ATTACHMENT_HOST_SUFFIXES = (
     ".superhuman.com",
     ".firebaseio.com",
 )
-_READ_ONLY_POST_ACTIONS = (
-    "userdata.getthreads",
-    "userdata.read",
-    "userdata.searchhistory",
-    "userdata.sync",
-    "autolabels.preview",
-    "labels.recentchanges",
-    "labels.resync",
-    "autodrafts.previeweascheduling",
-    "smartsend.gettimerange",
-    "sessions.getcsrftoken",
-    "sessions.gettokens",
-    "teams.caninvite",
-    "teams.classify",
-    "teams.getbillingfeaturesbysku",
-    "teams.members",
-    "teams.suggest",
-    "links.content",
-    "translate.detectlanguage",
-    "users.getreferral",
-    "users.refreshaliases",
-)
+_READ_ONLY_POST_ROUTES = {
+    "https://mail.superhuman.com": {
+        "/~backend/v3/userdata.getthreads",
+        "/~backend/v3/userdata.read",
+        "/~backend/v3/userdata.searchhistory",
+        "/~backend/v3/userdata.sync",
+        "/~backend/v3/autolabels.preview",
+        "/~backend/v3/labels.recentchanges",
+        "/~backend/v3/labels.resync",
+        "/~backend/v3/autodrafts.previeweascheduling",
+        "/~backend/v3/smartsend.gettimerange",
+        "/~backend/v3/teams.caninvite",
+        "/~backend/v3/teams.classify",
+        "/~backend/v3/teams.getbillingfeaturesbysku",
+        "/~backend/v3/teams.members",
+        "/~backend/v3/teams.suggest",
+        "/~backend/v3/links.content",
+        "/~backend/v3/translate.detectlanguage",
+        "/~backend/v3/users.getreferral",
+        "/~backend/v3/users.refreshaliases",
+    },
+    "https://accounts.superhuman.com": {
+        "/~backend/v3/sessions.getcsrftoken",
+        "/~backend/v3/sessions.gettokens",
+    },
+}
 
 
 class AttestationError(RuntimeError):
@@ -220,8 +224,10 @@ def _network_writes(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
         url = str(event.get("url") or "").lower()
         if method in {"GET", "HEAD", "OPTIONS"}:
             continue
-        action = urlparse(url).path.rstrip("/").rsplit("/", 1)[-1]
-        if method == "POST" and action in _READ_ONLY_POST_ACTIONS:
+        parsed = urlparse(url)
+        origin = f"{parsed.scheme}://{parsed.netloc}"
+        route = parsed.path.rstrip("/")
+        if method == "POST" and route in _READ_ONLY_POST_ROUTES.get(origin, set()):
             continue
         blocked.append({"method": method, "url": url})
     return blocked
