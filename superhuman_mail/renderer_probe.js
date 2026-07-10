@@ -412,6 +412,8 @@ async function main() {
     await client.send("Runtime.enable");
     await client.send("Network.enable");
     await client.send("Page.enable");
+    client.events = [];
+    client.interceptions = [];
     await client.send("Fetch.enable", { patterns: [{ urlPattern: "*", requestStage: "Request" }] });
     await client.send("Network.emulateNetworkConditions", {
       offline: true,
@@ -420,8 +422,6 @@ async function main() {
       uploadThroughput: 0,
     });
     networkOffline = true;
-    client.events = [];
-    client.interceptions = [];
     // The probe never focuses/navigates. Fetch interception and offline mode
     // are active before render work so an autosave or other non-idempotent
     // request is aborted before any bytes are dispatched.
