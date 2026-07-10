@@ -87,7 +87,7 @@ The adapter:
 - mirrors the current build's reminder behavior: reminder stays on the persisted, fingerprint-bound draft and is not copied into `toJsonRequest()`;
 - rejects inline signature uploads that cannot be materialized read-only;
 - captures the compose view and a network-disabled rendering of the exact outgoing HTML;
-- observes network requests and fails closed on every non-idempotent request except an explicit read-only POST allowlist;
+- enables CDP Fetch interception and target-offline mode before focus/render work, aborting every non-allowlisted non-idempotent request before dispatch and failing the attestation if the app attempted one;
 - re-reads the server snapshot and history after rendering;
 - signs an expiring canonical artifact with a Keychain-held HMAC key.
 
@@ -104,17 +104,18 @@ shm attestation show ID_OR_PATH \
   --draft-id DRAFT
 ```
 
-The inspector verifies canonical ID/HMAC, screenshot hashes, expiry, and optional binding. It exposes counts, booleans (including `editor_normalized_changed`), renderer versions, screenshot hashes/paths, and the overall fingerprint only. Valid-but-expired artifacts return `usable: false`; tamper or binding mismatch fails.
+The inspector verifies canonical ID/HMAC, screenshot hashes, expiry, and optional binding. It exposes counts, booleans (including `editor_normalized_changed`), renderer versions, screenshot hashes/paths, the overall fingerprint, and a content-free `approval_binding`. Valid-but-expired artifacts return `usable: false`; tamper or binding mismatch fails.
 
 ### 4. Grace period and strict execution
 
-An external gate displays the safe attestation summary, records an opaque approval reference, and runs its grace period. It then invokes:
+The external Slack approval broker records the exact `approval_binding`, presents the complete message, authenticates the authorized human decision, and issues a ≤5-minute Ed25519 receipt. Verify it read-only, then let the credential-isolated trusted executor run its grace period and invoke:
 
 ```bash
+shm approval verify RECEIPT.json --attestation ID_OR_PATH
 shm send --confirm THREAD DRAFT \
   --account owner@example.com \
   --attestation ID_OR_PATH \
-  --approval-ref OPAQUE_REFERENCE \
+  --approval-receipt RECEIPT.json \
   --delay 20 \
   --wait 120
 ```
@@ -123,26 +124,23 @@ Immediately before POST, `shm`:
 
 1. reruns authoritative lifecycle/envelope/body preflight;
 2. verifies account, artifact signature, expiry, thread/draft, approved delay, and source history;
-3. creates or resumes one local attempt identity;
-4. runs a second no-write live-Superhuman renderer probe with the reserved ID;
-5. requires the complete exact fingerprint and outgoing payload bytes to equal approval;
-6. atomically claims the only local POST before network I/O;
-7. posts the freshly probed exact payload;
-8. reconciles userdata/provider evidence without minting another identity.
+3. verifies the receipt schema/canonical ID, pinned issuer/key, Ed25519 signature, authorized approver, lifetime, action/provider, and exact attestation binding;
+4. creates or resumes one receipt-bound local attempt identity;
+5. runs a second no-write live-Superhuman renderer probe with the reserved ID;
+6. requires the complete exact fingerprint and outgoing payload bytes to equal approval;
+7. in one `BEGIN IMMEDIATE`, rechecks expiry, consumes the receipt ID, and claims the only local POST;
+8. posts the freshly probed exact payload;
+9. reconciles userdata/provider evidence without minting another identity.
 
 There is no unattested fallback for customer mail.
 
 ## Approval authority boundary
 
-`--approval-ref` is audit correlation only. Core `shm` does not verify that the reference was issued by a human or an independent authority, and its result says:
+Caller-controlled `--approval-ref` is deprecated correlation and never authorizes. Before external verification, results say `approval_authority: external_receipt_required`, `approval_verified: false`, and `unattended_send_eligible: false`. A verified receipt changes authority to `external_ed25519_receipt_v1`; its ID/issuer/key are journaled and its one local consumption is atomic with the POST claim.
 
-```text
-approval_authority: correlation_only
-approval_verified: false
-unattended_send_eligible: false
-```
+Environment variables and user-writable files cannot install receipt trust roots. Roots are release-pinned or loaded from `/Library/Application Support/superhuman-mail/approval-trust-v1.json` only when it is a root-owned regular file not writable by group/others. With no root, confirm fails `APPROVAL_TRUST_UNAVAILABLE`.
 
-Therefore unattended automation must hard-disable `--confirm`. An operator may invoke a send only after the full message has been explicitly approved and through the external 60-second `send-gate`. A future unattended path requires a signed, single-use capability from an issuer whose signing key is unavailable to the worker; same-process CLI arguments, environment variables, or same-UID files are not an approval trust boundary. `shm attestation show` verifies render integrity, not human approval.
+This verifier does not by itself isolate transport credentials. Production must run it and the POST inside one canonical, durable, broker-owned/root-owned or remote trusted executor; the unattended worker must not possess Superhuman write credentials, the issuer private key, a writable verifier/trust root, or a local/raw transport fallback. See [`approval-receipt-issuer-contract.md`](approval-receipt-issuer-contract.md).
 
 ## Result and exit contract
 
@@ -151,7 +149,8 @@ Send/status data includes:
 ```text
 state, post_claimed, accepted, sent, provider_confirmed, outbound_evidence
 attempt_id, attestation_id, superhuman_id, provider_message_id
-approval_authority, approval_verified, unattended_send_eligible
+approval_authority, approval_verified, approval_consumed, approval_receipt_id
+approval_issuer, approval_key_id, unattended_send_eligible, trusted_executor_required
 idempotency_scope, lifecycle
 ```
 
@@ -165,9 +164,9 @@ Follow-up/CRM automation must consume only `provider_confirmed: true` / `state: 
 
 ## Idempotency scope
 
-The SQLite attempt journal lives in one canonical private per-user state directory. A unique `(immutable_provider_user_id, draft_id)` row and `BEGIN IMMEDIATE` claim guarantee one POST for cooperating `shm` processes sharing that journal.
+The SQLite attempt journal must live in the canonical durable state directory of the trusted executor. A unique `(immutable_provider_user_id, draft_id)` row, permanent receipt-consumption identity, and `BEGIN IMMEDIATE` transaction guarantee one receipt consumption/POST claim for cooperating executor processes sharing that journal.
 
-This does **not** serialize another host, another state directory, the native Superhuman UI, or an uncooperative caller. Outputs therefore say:
+This does **not** serialize another executor host/state directory or the native Superhuman UI. Production therefore permits transport credentials in only one canonical executor authority. Outputs continue to state the narrower mechanism scope:
 
 ```text
 idempotency_scope: local_cooperating_processes

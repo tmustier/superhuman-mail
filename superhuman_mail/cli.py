@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from . import _auth, _config, _local
+from . import approval as _approval
 from . import attestation as _attestation
 from . import comment as _comment
 from . import draft as _draft
@@ -30,7 +31,7 @@ from ._envelope import emit, error, fail, ok
 
 __version__ = "0.3.0"
 
-_COMMANDS = ["thread", "opens", "draft", "comment", "send", "attestation", "setup", "doctor", "schema"]
+_COMMANDS = ["thread", "opens", "draft", "comment", "send", "attestation", "approval", "setup", "doctor", "schema"]
 
 # ---------------------------------------------------------------------------
 # Schema definition (for agent introspection)
@@ -333,7 +334,8 @@ SCHEMA: dict[str, dict[str, Any]] = {
             "--confirm": {"required": False, "type": "flag", "hint": "Strict exact-attested send"},
             "--account": {"required": False, "type": "string"},
             "--attestation": {"required": False, "type": "string", "hint": "Required with --confirm"},
-            "--approval-ref": {"required": False, "type": "string", "hint": "Audit correlation only (not authority); required with --confirm"},
+            "--approval-receipt": {"required": False, "type": "string", "hint": "Externally signed exact-send receipt; required with --confirm"},
+            "--approval-ref": {"required": False, "type": "string", "hint": "Deprecated audit correlation; never authorizes"},
             "--cdp-url": {"required": False, "type": "string", "default": "http://127.0.0.1:9222"},
             "--window-id": {"required": False, "type": "int"},
             "--delay": {"required": False, "type": "int", "default": 20},
@@ -343,8 +345,17 @@ SCHEMA: dict[str, dict[str, Any]] = {
         "examples": [
             "shm send --dry-run THREAD DRAFT --account owner@example.com",
             "shm send status THREAD DRAFT --account owner@example.com --wait 120",
-            "shm send --confirm THREAD DRAFT --account owner@example.com --attestation ID --approval-ref REF --wait 120",
+            "shm send --confirm THREAD DRAFT --account owner@example.com --attestation ID --approval-receipt RECEIPT.json --wait 120",
         ],
+    },
+    "approval.verify": {
+        "description": "Verify an externally signed exact-send receipt and replay state",
+        "args": {
+            "reference": {"required": True, "type": "string"},
+            "--attestation": {"required": True, "type": "string"},
+        },
+        "safety": "read",
+        "examples": ["shm approval verify RECEIPT.json --attestation ID_OR_PATH"],
     },
     "attestation.show": {
         "description": "Verify and inspect a render attestation without exposing mail content",
@@ -714,7 +725,8 @@ def _build_parser() -> _ShmParser:
     send_g.add_argument("--confirm", action="store_true", help="Strict exact-attested send (irreversible)")
     send_p.add_argument("--account")
     send_p.add_argument("--attestation")
-    send_p.add_argument("--approval-ref", help="Audit correlation only; does not grant send authority")
+    send_p.add_argument("--approval-receipt", help="Externally signed exact-send approval receipt")
+    send_p.add_argument("--approval-ref", help="Deprecated audit correlation only; never grants authority")
     send_p.add_argument("--cdp-url", default="http://127.0.0.1:9222")
     send_p.add_argument("--window-id", type=int)
     send_p.add_argument("--delay", type=int, default=20)
@@ -728,6 +740,13 @@ def _build_parser() -> _ShmParser:
     a_show.add_argument("--account")
     a_show.add_argument("--thread-id")
     a_show.add_argument("--draft-id")
+
+    # -- approval (read-only external authority verification) --
+    approval_p = _sub(sub, "approval", help="Verify externally issued exact-send approval receipts")
+    apsub = approval_p.add_subparsers(dest="action")
+    ap_verify = _sub(apsub, "verify", help="Verify receipt authority/binding/replay state", schema_key="approval.verify")
+    ap_verify.add_argument("reference")
+    ap_verify.add_argument("--attestation", required=True)
 
     # -- setup --
     setup_p = _sub(sub, "setup", help="Auto-detect credentials from local Superhuman app", schema_key="setup")
@@ -910,6 +929,7 @@ def main(argv: list[str] | None = None) -> int:
                 delay=args.delay,
                 account=args.account,
                 attestation=args.attestation,
+                approval_receipt=args.approval_receipt,
                 approval_ref=args.approval_ref,
                 wait=args.wait,
                 renderer=_attestation.CdpRenderer(cdp_url=args.cdp_url, window_id=args.window_id),
@@ -933,6 +953,21 @@ def main(argv: list[str] | None = None) -> int:
                 return emit(ok("attestation.show", summary))
             except _attestation.AttestationError as exc:
                 return emit(fail("attestation.show", [error("conflict", exc.code, False, exc.hint)]))
+
+    # -- approval --
+    elif args.command == "approval":
+        if not hasattr(args, "action") or not args.action:
+            return emit(fail("approval", [error("input", "MISSING_ACTION", False, "Use: shm approval verify")]))
+        if args.action == "verify":
+            try:
+                return emit(ok(
+                    "approval.verify",
+                    _approval.show_safe(args.reference, attestation_reference=args.attestation),
+                ))
+            except _approval.ApprovalError as exc:
+                return emit(fail("approval.verify", [error("conflict", exc.code, False, exc.hint)]))
+            except _attestation.AttestationError as exc:
+                return emit(fail("approval.verify", [error("conflict", exc.code, False, exc.hint)]))
 
     # -- setup --
     elif args.command == "setup":

@@ -13,7 +13,7 @@ from email.utils import parseaddr
 from html import unescape
 from typing import Any
 
-from . import _auth, attestation as _attestation, attempts as _attempts, lifecycle
+from . import _auth, approval as _approval, attestation as _attestation, attempts as _attempts, lifecycle
 from ._envelope import classify_exception, error, fail, ok
 
 # ---------------------------------------------------------------------------
@@ -164,7 +164,6 @@ def _build_outgoing(draft: dict[str, Any], sid: str | None = None) -> dict[str, 
 # ---------------------------------------------------------------------------
 
 SEND_DELAY_SECONDS = 20
-APPROVAL_AUTHORITY = "correlation_only"
 
 
 class SendSafetyError(RuntimeError):
@@ -308,10 +307,12 @@ def validate(thread_id: str, draft_id: str, *, account: str | None = None) -> di
             "body_preview": (draft.get("snippet") or "")[:200],
             "has_attachments": bool(outgoing.get("attachments")),
             "lifecycle": checked["lifecycle"],
-            "approval_authority": APPROVAL_AUTHORITY,
+            "approval_authority": "external_receipt_required",
             "approval_verified": False,
+            "approval_consumed": False,
             "unattended_send_eligible": False,
-            "next_step": "Create an exact render attestation and obtain external operator approval before --confirm",
+            "trusted_executor_required": True,
+            "next_step": "Create an exact render attestation and obtain an external signed approval receipt",
         }
         for draft_key, result_key in {
             "scheduledFor": "scheduled_for",
@@ -348,17 +349,23 @@ def _post_exact_payload(outgoing: dict[str, Any], *, delay: int) -> None:
         resp.read()
 
 
-def _request_accepted(attempt: dict[str, Any], state: dict[str, Any]) -> bool:
+def _lifecycle_request_accepted(state: dict[str, Any]) -> bool:
+    if state["state"] in {
+        lifecycle.SCHEDULED,
+        lifecycle.BACKEND_CONFIRMED,
+        lifecycle.PROVIDER_CONFIRMED,
+    }:
+        return True
+    send_job = state.get("send_job") or {}
     return bool(
-        attempt.get("response_class") == "http_2xx"
-        or state["state"] in {
-            lifecycle.SCHEDULED,
-            lifecycle.BACKEND_CONFIRMED,
-            lifecycle.PROVIDER_CONFIRMED,
-            lifecycle.FAILED,
-            lifecycle.ABORTED,
-        }
+        state["state"] in {lifecycle.FAILED, lifecycle.ABORTED}
+        and send_job.get("not_sent_to_server_present")
+        and not send_job.get("not_sent_to_server")
     )
+
+
+def _request_accepted(attempt: dict[str, Any], state: dict[str, Any]) -> bool:
+    return bool(attempt.get("response_class") == "http_2xx" or _lifecycle_request_accepted(state))
 
 
 def _attempt_result(attempt: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
@@ -381,9 +388,14 @@ def _attempt_result(attempt: dict[str, Any], state: dict[str, Any]) -> dict[str,
         "outbound_evidence": bool(state["outbound_evidence"]),
         "superhuman_id": attempt["superhuman_id"],
         "provider_message_id": (state.get("provider_message") or {}).get("id"),
-        "approval_authority": APPROVAL_AUTHORITY,
-        "approval_verified": False,
+        "approval_authority": _approval.AUTHORITY if attempt.get("approval_receipt_id") else "external_receipt_required",
+        "approval_verified": bool(attempt.get("approval_receipt_id")),
+        "approval_consumed": post_claimed,
+        "approval_receipt_id": attempt.get("approval_receipt_id"),
+        "approval_issuer": attempt.get("approval_issuer"),
+        "approval_key_id": attempt.get("approval_key_id"),
         "unattended_send_eligible": False,
+        "trusted_executor_required": True,
         "idempotency_scope": _attempts.IDEMPOTENCY_SCOPE,
         "lifecycle": state,
     }
@@ -546,23 +558,17 @@ def status(
             "draft_id": draft_id,
             "state": state["state"],
             "post_claimed": False,
-            "accepted": state["state"] in {
-                lifecycle.SCHEDULED,
-                lifecycle.REQUESTED,
-                lifecycle.PENDING_UNDO,
-                lifecycle.BACKEND_CONFIRMED,
-                lifecycle.PROVIDER_CONFIRMED,
-                lifecycle.FAILED,
-                lifecycle.ABORTED,
-            },
+            "accepted": _lifecycle_request_accepted(state),
             "sent": state["state"] == lifecycle.PROVIDER_CONFIRMED,
             "provider_confirmed": state["state"] == lifecycle.PROVIDER_CONFIRMED,
             "outbound_evidence": state["outbound_evidence"],
             "superhuman_id": (state.get("send_job") or {}).get("superhuman_id"),
             "provider_message_id": (state.get("provider_message") or {}).get("id"),
-            "approval_authority": APPROVAL_AUTHORITY,
+            "approval_authority": "external_receipt_required",
             "approval_verified": False,
+            "approval_consumed": False,
             "unattended_send_eligible": False,
+            "trusted_executor_required": True,
             "idempotency_scope": _attempts.IDEMPOTENCY_SCOPE,
             "lifecycle": state,
         }, warnings=warnings + observed_warnings)
@@ -579,6 +585,7 @@ def execute(
     delay: int = SEND_DELAY_SECONDS,
     account: str | None = None,
     attestation: str | None = None,
+    approval_receipt: str | None = None,
     approval_ref: str | None = None,
     wait: float = 120,
     journal: _attempts.AttemptJournal | None = None,
@@ -604,10 +611,13 @@ def execute(
                 allow_empty_subject=True,
             )
             raise SendSafetyError("ATTESTATION_REQUIRED", "--attestation is required for strict send", cls="input")
-        if not approval_ref or not approval_ref.strip():
-            raise SendSafetyError("APPROVAL_REFERENCE_REQUIRED", "--approval-ref is required for strict send", cls="input")
-        if len(approval_ref) > 512:
-            raise SendSafetyError("APPROVAL_REFERENCE_INVALID", "--approval-ref must be 512 characters or fewer", cls="input")
+        if not approval_receipt:
+            hint = "--approval-ref is audit-only and cannot authorize a send; " if approval_ref else ""
+            raise SendSafetyError(
+                "APPROVAL_RECEIPT_REQUIRED",
+                hint + "--approval-receipt from the external approval broker is required",
+                cls="input",
+            )
         if delay < 0:
             raise SendSafetyError("INVALID_DELAY", "--delay must be non-negative", cls="input")
 
@@ -620,9 +630,19 @@ def execute(
         identity, account_warnings = lifecycle.resolve_account(account, require_explicit=True)
         if str(record.get("account", {}).get("provider_user_id")) != identity["provider_user_id"]:
             raise SendSafetyError("ACCOUNT_BINDING_MISMATCH", "Attestation belongs to a different immutable account identity")
+        _receipt, approval = _approval.load_and_verify(approval_receipt, attestation=record)
 
         journal = journal or _attempts.AttemptJournal()
         attempt = journal.get(identity["provider_user_id"], draft_id)
+        attempt_approval = {
+            "approval_receipt_id": approval["receipt_id"],
+            "approval_receipt_digest": approval["receipt_digest"],
+            "approval_issuer": approval["issuer"],
+            "approval_key_id": approval["key_id"],
+            "approval_approver": approval["approver"],
+            "approval_issued_at": approval["issued_at"],
+            "approval_expires_at": approval["expires_at"],
+        }
         if attempt is not None:
             # Validate that this invocation carries the same approved identity.
             attempt, _created = journal.create_or_get(
@@ -631,7 +651,7 @@ def execute(
                 thread_id=thread_id,
                 draft_id=draft_id,
                 attestation_id=str(record["attestation_id"]),
-                approval_ref=approval_ref,
+                **attempt_approval,
                 superhuman_id=str(record["superhuman_id"]),
                 outgoing_fingerprint=str(record["fingerprint"]["exact"]),
             )
@@ -681,12 +701,17 @@ def execute(
                 thread_id=thread_id,
                 draft_id=draft_id,
                 attestation_id=str(record["attestation_id"]),
-                approval_ref=approval_ref,
+                **attempt_approval,
                 superhuman_id=str(record["superhuman_id"]),
                 outgoing_fingerprint=str(record["fingerprint"]["exact"]),
             )
         try:
-            attempt, claimed = journal.claim_post(attempt["attempt_id"])
+            attempt, claimed = journal.claim_post(
+                attempt["attempt_id"],
+                approval_receipt_id=approval["receipt_id"],
+                approval_receipt_digest=approval["receipt_digest"],
+                approval_expires_at=approval["expires_at"],
+            )
         except KeyError as exc:
             replacement = journal.get(identity["provider_user_id"], draft_id)
             if replacement is not None:
@@ -736,6 +761,10 @@ def execute(
     except SendSafetyError as exc:
         return _safety_failure("send", exc)
     except _attestation.AttestationError as exc:
+        return fail("send", [error("conflict", exc.code, False, exc.hint)])
+    except _approval.ApprovalError as exc:
+        return fail("send", [error("conflict", exc.code, False, exc.hint)])
+    except _attempts.ReceiptClaimError as exc:
         return fail("send", [error("conflict", exc.code, False, exc.hint)])
     except _attempts.AttemptConflict as exc:
         return fail("send", [error("conflict", "ATTEMPT_CONFLICT", False, str(exc))])

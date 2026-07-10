@@ -104,8 +104,9 @@ def test_validate_is_truthful_about_metadata_only_preflight():
     assert result["data"]["sendable"] is True
     assert result["data"]["send_eligible"] is False
     assert result["data"]["render_attested"] is False
-    assert result["data"]["approval_authority"] == "correlation_only"
+    assert result["data"]["approval_authority"] == "external_receipt_required"
     assert result["data"]["approval_verified"] is False
+    assert result["data"]["approval_consumed"] is False
     assert result["data"]["unattended_send_eligible"] is False
     assert result["data"]["lifecycle"]["state"] == lifecycle.ACTIVE
 
@@ -127,17 +128,18 @@ def test_validate_requires_explicit_account_binding():
     assert result["errors"][0]["code"] == "ACCOUNT_REQUIRED"
 
 
-def test_execute_rejects_blank_approval_reference_before_attestation_load():
+def test_caller_controlled_approval_reference_cannot_authorize_before_load():
     with patch("superhuman_mail.send._attestation.load") as load:
         result = send.execute(
             THREAD,
             DRAFT,
             account=ACCOUNT["email"],
             attestation="fixture",
-            approval_ref="   ",
+            approval_ref="caller-invented",
         )
     assert result["status"] == "failed"
-    assert result["errors"][0]["code"] == "APPROVAL_REFERENCE_REQUIRED"
+    assert result["errors"][0]["code"] == "APPROVAL_RECEIPT_REQUIRED"
+    assert "audit-only" in result["errors"][0]["hint"]
     load.assert_not_called()
 
 

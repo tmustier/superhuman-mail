@@ -17,6 +17,23 @@ function arg(name, fallback) {
   return index >= 0 && process.argv[index + 1] ? process.argv[index + 1] : fallback;
 }
 
+const READ_ONLY_POST_ACTIONS = [
+  "userdata.getthreads", "userdata.read", "userdata.searchhistory", "userdata.sync",
+  "autolabels.preview", "labels.recentchanges", "labels.resync",
+  "autodrafts.previeweascheduling", "smartsend.gettimerange",
+  "sessions.getcsrftoken", "sessions.gettokens", "teams.caninvite", "teams.classify",
+  "teams.getbillingfeaturesbysku", "teams.members", "teams.suggest", "links.content",
+  "translate.detectlanguage", "users.getreferral", "users.refreshaliases",
+];
+
+function requestDisposition(methodValue, urlValue) {
+  const method = String(methodValue || "GET").toUpperCase();
+  if (["GET", "HEAD", "OPTIONS"].includes(method)) return "continue";
+  let action = "";
+  try { action = new URL(String(urlValue || "")).pathname.replace(/\/$/, "").split("/").pop().toLowerCase(); } catch (_) {}
+  return method === "POST" && READ_ONLY_POST_ACTIONS.includes(action) ? "continue" : "fail";
+}
+
 const RENDERER_CONTRACT = {
   adapter_version: "superhuman-cdp-v1",
   outgoing_fields: [
@@ -27,9 +44,21 @@ const RENDERER_CONTRACT = {
   ],
   reminder: "persisted_draft_only_current_build",
   mutates_mail_state: false,
+  blocks_non_idempotent_before_dispatch: true,
+  network_offline_during_render: true,
+  read_only_post_actions: READ_ONLY_POST_ACTIONS,
 };
 if (process.argv.includes("--print-contract")) {
   process.stdout.write(JSON.stringify(RENDERER_CONTRACT));
+  process.exit(0);
+}
+if (process.argv.includes("--test-network-policy")) {
+  const requests = JSON.parse(fs.readFileSync(0, "utf8"));
+  process.stdout.write(JSON.stringify(requests.map(item => ({
+    method: item.method,
+    url: item.url,
+    disposition: requestDisposition(item.method, item.url),
+  }))));
   process.exit(0);
 }
 
@@ -46,6 +75,7 @@ class CDP {
     this.sequence = 0;
     this.pending = new Map();
     this.events = [];
+    this.interceptions = [];
   }
 
   async connect() {
@@ -66,6 +96,19 @@ class CDP {
       } else if (message.method === "Network.requestWillBeSent") {
         const request = message.params && message.params.request || {};
         this.events.push({ method: request.method || "GET", url: request.url || "" });
+      } else if (message.method === "Fetch.requestPaused") {
+        const params = message.params || {};
+        const request = params.request || {};
+        const method = request.method || "GET";
+        const url = request.url || "";
+        const disposition = requestDisposition(method, url);
+        this.events.push({ method, url, blocked: disposition === "fail" });
+        const intercepted = disposition === "continue"
+          ? this.send("Fetch.continueRequest", { requestId: params.requestId }, 5000)
+          : this.send("Fetch.failRequest", { requestId: params.requestId, errorReason: "BlockedByClient" }, 5000);
+        this.interceptions.push(intercepted.catch(error => {
+          throw new Error(`FETCH_INTERCEPTION_FAILED: ${error.message}`);
+        }));
       }
     });
   }
@@ -365,12 +408,24 @@ async function main() {
   if (process.env.SHM_RENDERER_DEBUG) process.stderr.write(`probe:target ${target.id} ${target.url}\n`);
 
   const client = new CDP(target.webSocketDebuggerUrl);
+  let networkOffline = false;
   await client.connect();
   try {
     await client.send("Runtime.enable");
     await client.send("Network.enable");
     await client.send("Page.enable");
+    await client.send("Fetch.enable", { patterns: [{ urlPattern: "*", requestStage: "Request" }] });
+    await client.send("Network.emulateNetworkConditions", {
+      offline: true,
+      latency: 0,
+      downloadThroughput: 0,
+      uploadThroughput: 0,
+    });
+    networkOffline = true;
     client.events = [];
+    client.interceptions = [];
+    // Fetch interception is active before focus/render work so an autosave or
+    // other non-idempotent request is aborted before any bytes are dispatched.
     await client.send("Page.bringToFront");
 
     const renderExpression = expressionFor(input);
@@ -434,11 +489,34 @@ async function main() {
     await capture(outgoingPath, { x: rect.x, y: rect.y, width: rect.width, height: rect.height, scale: 1 });
     if (process.env.SHM_RENDERER_DEBUG) process.stderr.write("probe:outgoing-shot\n");
     await evaluate(client, `(() => { const node = document.getElementById("__shm_attestation_overlay"); if (node) node.remove(); return true; })()`);
+    await client.send("Network.emulateNetworkConditions", {
+      offline: false,
+      latency: 0,
+      downloadThroughput: -1,
+      uploadThroughput: -1,
+    });
+    networkOffline = false;
+    // Keep interception active while the app observes connectivity restoration;
+    // any queued mutation is still failed before dispatch.
+    await new Promise(resolve => setTimeout(resolve, 100));
+    await Promise.all(client.interceptions);
+    await client.send("Fetch.disable");
 
     result.network_events = client.events;
     result.screenshots = [composePath, outgoingPath];
     process.stdout.write(JSON.stringify(result));
   } finally {
+    if (networkOffline) {
+      try {
+        await client.send("Network.emulateNetworkConditions", {
+          offline: false,
+          latency: 0,
+          downloadThroughput: -1,
+          uploadThroughput: -1,
+        }, 1000);
+      } catch (_) {}
+    }
+    try { await client.send("Fetch.disable", {}, 1000); } catch (_) {}
     client.close();
   }
 }

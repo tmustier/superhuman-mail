@@ -27,6 +27,31 @@ def _record():
     }
 
 
+def _approval():
+    return {
+        "receipt_id": "sha256:receipt-fixture",
+        "receipt_digest": "sha256:receipt-digest",
+        "issuer": "issuer-fixture",
+        "key_id": "key-fixture",
+        "approver": "slack:user-fixture",
+        "issued_at": "2026-07-10T12:00:00Z",
+        "expires_at": "2099-07-10T12:05:00Z",
+    }
+
+
+def _attempt_approval_kwargs():
+    verified = _approval()
+    return {
+        "approval_receipt_id": verified["receipt_id"],
+        "approval_receipt_digest": verified["receipt_digest"],
+        "approval_issuer": verified["issuer"],
+        "approval_key_id": verified["key_id"],
+        "approval_approver": verified["approver"],
+        "approval_issued_at": verified["issued_at"],
+        "approval_expires_at": verified["expires_at"],
+    }
+
+
 def _state(name, *, provider_id=None):
     return {
         "account": ACCOUNT,
@@ -62,19 +87,20 @@ def _run(journal, state, *, post_side_effect=None, wait=0):
     with patch("superhuman_mail.send._preflight", return_value=_preflight()):
         with patch("superhuman_mail.send._attestation.load", return_value=_record()):
             with patch("superhuman_mail.send._attestation.verify"):
-                with patch("superhuman_mail.send._attestation.revalidate_for_send", return_value={"outgoing_payload": {"fixture": True}}):
-                    with patch("superhuman_mail.send.lifecycle.resolve_account", return_value=(ACCOUNT, [])):
-                        with patch("superhuman_mail.send.lifecycle.observe", return_value=_observe(state)):
-                            with patch("superhuman_mail.send._post_exact_payload", side_effect=post_side_effect) as post:
-                                result = send.execute(
-                                    THREAD,
-                                    DRAFT,
-                                    account=ACCOUNT["email"],
-                                    attestation="attestation_fixture",
-                                    approval_ref="approval_fixture",
-                                    wait=wait,
-                                    journal=journal,
-                                )
+                with patch("superhuman_mail.send._approval.load_and_verify", return_value=({}, _approval())):
+                    with patch("superhuman_mail.send._attestation.revalidate_for_send", return_value={"outgoing_payload": {"fixture": True}}):
+                        with patch("superhuman_mail.send.lifecycle.resolve_account", return_value=(ACCOUNT, [])):
+                            with patch("superhuman_mail.send.lifecycle.observe", return_value=_observe(state)):
+                                with patch("superhuman_mail.send._post_exact_payload", side_effect=post_side_effect) as post:
+                                    result = send.execute(
+                                        THREAD,
+                                        DRAFT,
+                                        account=ACCOUNT["email"],
+                                        attestation="attestation_fixture",
+                                        approval_receipt="receipt-fixture.json",
+                                        wait=wait,
+                                        journal=journal,
+                                    )
     return result, post
 
 
@@ -114,21 +140,22 @@ def test_stale_second_probe_never_creates_or_strands_attempt(tmp_path):
     with patch("superhuman_mail.send._preflight", return_value=_preflight()):
         with patch("superhuman_mail.send._attestation.load", return_value=_record()):
             with patch("superhuman_mail.send._attestation.verify"):
-                with patch(
-                    "superhuman_mail.send._attestation.revalidate_for_send",
-                    side_effect=AttestationError("STALE_ATTESTATION", "changed"),
-                ):
-                    with patch("superhuman_mail.send.lifecycle.resolve_account", return_value=(ACCOUNT, [])):
-                        with patch("superhuman_mail.send._post_exact_payload") as post:
-                            result = send.execute(
-                                THREAD,
-                                DRAFT,
-                                account=ACCOUNT["email"],
-                                attestation="attestation_fixture",
-                                approval_ref="approval_fixture",
-                                wait=0,
-                                journal=journal,
-                            )
+                with patch("superhuman_mail.send._approval.load_and_verify", return_value=({}, _approval())):
+                    with patch(
+                        "superhuman_mail.send._attestation.revalidate_for_send",
+                        side_effect=AttestationError("STALE_ATTESTATION", "changed"),
+                    ):
+                        with patch("superhuman_mail.send.lifecycle.resolve_account", return_value=(ACCOUNT, [])):
+                            with patch("superhuman_mail.send._post_exact_payload") as post:
+                                result = send.execute(
+                                    THREAD,
+                                    DRAFT,
+                                    account=ACCOUNT["email"],
+                                    attestation="attestation_fixture",
+                                    approval_receipt="receipt-fixture.json",
+                                    wait=0,
+                                    journal=journal,
+                                )
     assert result["status"] == "failed"
     assert result["errors"][0]["code"] == "STALE_ATTESTATION"
     assert journal.get(ACCOUNT["provider_user_id"], DRAFT) is None
@@ -144,9 +171,11 @@ def test_http_acceptance_during_undo_window_is_pending_not_sent(tmp_path):
     assert result["data"]["accepted"] is True
     assert result["data"]["sent"] is False
     assert result["data"]["provider_confirmed"] is False
-    assert result["data"]["approval_authority"] == "correlation_only"
-    assert result["data"]["approval_verified"] is False
+    assert result["data"]["approval_authority"] == "external_ed25519_receipt_v1"
+    assert result["data"]["approval_verified"] is True
+    assert result["data"]["approval_consumed"] is True
     assert result["data"]["unattended_send_eligible"] is False
+    assert result["data"]["trusted_executor_required"] is True
     assert result["data"]["idempotency_scope"] == "local_cooperating_processes"
 
 
@@ -171,19 +200,20 @@ def test_retry_reconciles_existing_attempt_without_second_probe_or_post(tmp_path
     with patch("superhuman_mail.send._preflight") as preflight:
         with patch("superhuman_mail.send._attestation.load", return_value=_record()):
             with patch("superhuman_mail.send._attestation.verify"):
-                with patch("superhuman_mail.send._attestation.revalidate_for_send") as probe:
-                    with patch("superhuman_mail.send.lifecycle.resolve_account", return_value=(ACCOUNT, [])):
-                        with patch("superhuman_mail.send.lifecycle.observe", return_value=_observe(state)):
-                            with patch("superhuman_mail.send._post_exact_payload") as second_post:
-                                retried = send.execute(
-                                    THREAD,
-                                    DRAFT,
-                                    account=ACCOUNT["email"],
-                                    attestation="attestation_fixture",
-                                    approval_ref="approval_fixture",
-                                    wait=0,
-                                    journal=journal,
-                                )
+                with patch("superhuman_mail.send._approval.load_and_verify", return_value=({}, _approval())):
+                    with patch("superhuman_mail.send._attestation.revalidate_for_send") as probe:
+                        with patch("superhuman_mail.send.lifecycle.resolve_account", return_value=(ACCOUNT, [])):
+                            with patch("superhuman_mail.send.lifecycle.observe", return_value=_observe(state)):
+                                with patch("superhuman_mail.send._post_exact_payload") as second_post:
+                                    retried = send.execute(
+                                        THREAD,
+                                        DRAFT,
+                                        account=ACCOUNT["email"],
+                                        attestation="attestation_fixture",
+                                        approval_receipt="receipt-fixture.json",
+                                        wait=0,
+                                        journal=journal,
+                                    )
     assert retried["data"]["sent"] is True
     second_post.assert_not_called()
     probe.assert_not_called()
@@ -200,18 +230,19 @@ def test_recorded_provider_confirmation_is_not_downgraded_by_stale_cache(tmp_pat
     with patch("superhuman_mail.send._preflight") as preflight:
         with patch("superhuman_mail.send._attestation.load", return_value=_record()):
             with patch("superhuman_mail.send._attestation.verify"):
-                with patch("superhuman_mail.send.lifecycle.resolve_account", return_value=(ACCOUNT, [])):
-                    with patch("superhuman_mail.send.lifecycle.observe", return_value=_observe(_state(lifecycle.ACTIVE))):
-                        with patch("superhuman_mail.send._post_exact_payload") as post:
-                            result = send.execute(
-                                THREAD,
-                                DRAFT,
-                                account=ACCOUNT["email"],
-                                attestation="attestation_fixture",
-                                approval_ref="approval_fixture",
-                                wait=0,
-                                journal=journal,
-                            )
+                with patch("superhuman_mail.send._approval.load_and_verify", return_value=({}, _approval())):
+                    with patch("superhuman_mail.send.lifecycle.resolve_account", return_value=(ACCOUNT, [])):
+                        with patch("superhuman_mail.send.lifecycle.observe", return_value=_observe(_state(lifecycle.ACTIVE))):
+                            with patch("superhuman_mail.send._post_exact_payload") as post:
+                                result = send.execute(
+                                    THREAD,
+                                    DRAFT,
+                                    account=ACCOUNT["email"],
+                                    attestation="attestation_fixture",
+                                    approval_receipt="receipt-fixture.json",
+                                    wait=0,
+                                    journal=journal,
+                                )
     assert result["status"] == "succeeded"
     assert result["data"]["sent"] is True
     assert result["data"]["state"] == lifecycle.PROVIDER_CONFIRMED
@@ -247,7 +278,12 @@ def test_unknown_outcome_remains_non_sent_and_cannot_claim_again(tmp_path):
     assert result["data"]["accepted"] is False
     stored = journal.get(ACCOUNT["provider_user_id"], DRAFT)
     assert stored["state"] == "unknown"
-    _row, claimed = journal.claim_post(stored["attempt_id"])
+    _row, claimed = journal.claim_post(
+        stored["attempt_id"],
+        approval_receipt_id=_approval()["receipt_id"],
+        approval_receipt_digest=_approval()["receipt_digest"],
+        approval_expires_at=_approval()["expires_at"],
+    )
     assert claimed is False
 
 
@@ -259,7 +295,7 @@ def test_status_does_not_brick_never_posted_prepared_attempt(tmp_path):
         thread_id=THREAD,
         draft_id=DRAFT,
         attestation_id="attestation_fixture",
-        approval_ref="approval_fixture",
+        **_attempt_approval_kwargs(),
         superhuman_id=SID,
         outgoing_fingerprint="sha256:approved",
     )
@@ -288,24 +324,25 @@ def test_concurrent_prepared_rotation_surfaces_attempt_conflict_not_key_error(tm
         thread_id=THREAD,
         draft_id=DRAFT,
         attestation_id="attestation_fixture",
-        approval_ref="approval_fixture",
+        **_attempt_approval_kwargs(),
         superhuman_id=SID,
         outgoing_fingerprint="sha256:approved",
     )
     with patch("superhuman_mail.send._attestation.load", return_value=_record()):
         with patch("superhuman_mail.send._attestation.verify"):
-            with patch("superhuman_mail.send._attestation.revalidate_for_send", return_value={"outgoing_payload": {"fixture": True}}):
-                with patch("superhuman_mail.send.lifecycle.resolve_account", return_value=(ACCOUNT, [])):
-                    with patch.object(journal, "claim_post", side_effect=KeyError("rotated")):
-                        with patch("superhuman_mail.send._post_exact_payload") as post:
-                            result = send.execute(
-                                THREAD,
-                                DRAFT,
-                                account=ACCOUNT["email"],
-                                attestation="attestation_fixture",
-                                approval_ref="approval_fixture",
-                                journal=journal,
-                            )
+            with patch("superhuman_mail.send._approval.load_and_verify", return_value=({}, _approval())):
+                with patch("superhuman_mail.send._attestation.revalidate_for_send", return_value={"outgoing_payload": {"fixture": True}}):
+                    with patch("superhuman_mail.send.lifecycle.resolve_account", return_value=(ACCOUNT, [])):
+                        with patch.object(journal, "claim_post", side_effect=KeyError("rotated")):
+                            with patch("superhuman_mail.send._post_exact_payload") as post:
+                                result = send.execute(
+                                    THREAD,
+                                    DRAFT,
+                                    account=ACCOUNT["email"],
+                                    attestation="attestation_fixture",
+                                    approval_receipt="receipt-fixture.json",
+                                    journal=journal,
+                                )
     assert result["status"] == "failed"
     assert result["errors"][0]["code"] == "ATTEMPT_CONFLICT"
     post.assert_not_called()
@@ -319,7 +356,7 @@ def test_status_rejects_thread_mismatch_for_existing_attempt(tmp_path):
         thread_id=THREAD,
         draft_id=DRAFT,
         attestation_id="attestation_fixture",
-        approval_ref="approval_fixture",
+        **_attempt_approval_kwargs(),
         superhuman_id=SID,
         outgoing_fingerprint="sha256:approved",
     )
@@ -329,6 +366,35 @@ def test_status_rejects_thread_mismatch_for_existing_attempt(tmp_path):
     assert result["status"] == "failed"
     assert result["errors"][0]["code"] == "ATTEMPT_THREAD_MISMATCH"
     observe.assert_not_called()
+
+
+def test_client_local_terminal_job_is_not_reported_as_server_accepted(tmp_path):
+    journal = AttemptJournal(tmp_path / "attempts.sqlite3")
+    failed = _state(lifecycle.FAILED)
+    failed["send_job"] = {
+        "present": True,
+        "not_sent_to_server_present": True,
+        "not_sent_to_server": True,
+    }
+    with patch("superhuman_mail.send.lifecycle.resolve_account", return_value=(ACCOUNT, [])):
+        with patch("superhuman_mail.send.lifecycle.observe", return_value=_observe(failed)):
+            result = send.status(THREAD, DRAFT, account=ACCOUNT["email"], journal=journal)
+    assert result["data"]["state"] == lifecycle.FAILED
+    assert result["data"]["accepted"] is False
+
+
+def test_explicit_server_side_terminal_job_is_reported_as_accepted_request(tmp_path):
+    journal = AttemptJournal(tmp_path / "attempts.sqlite3")
+    failed = _state(lifecycle.FAILED)
+    failed["send_job"] = {
+        "present": True,
+        "not_sent_to_server_present": True,
+        "not_sent_to_server": False,
+    }
+    with patch("superhuman_mail.send.lifecycle.resolve_account", return_value=(ACCOUNT, [])):
+        with patch("superhuman_mail.send.lifecycle.observe", return_value=_observe(failed)):
+            result = send.status(THREAD, DRAFT, account=ACCOUNT["email"], journal=journal)
+    assert result["data"]["accepted"] is True
 
 
 def test_status_without_local_attempt_waits_for_native_job_provider_confirmation(tmp_path):
@@ -380,7 +446,7 @@ def test_concurrent_local_callers_share_one_post_claim(tmp_path):
             DRAFT,
             account=ACCOUNT["email"],
             attestation="attestation_fixture",
-            approval_ref="approval_fixture",
+            approval_receipt="receipt-fixture.json",
             wait=0,
             journal=journal,
         )
@@ -390,12 +456,13 @@ def test_concurrent_local_callers_share_one_post_claim(tmp_path):
     with patch("superhuman_mail.send._preflight", return_value=_preflight()):
         with patch("superhuman_mail.send._attestation.load", return_value=_record()):
             with patch("superhuman_mail.send._attestation.verify"):
-                with patch("superhuman_mail.send._attestation.revalidate_for_send", return_value={"outgoing_payload": {"fixture": True}}):
-                    with patch("superhuman_mail.send.lifecycle.resolve_account", return_value=(ACCOUNT, [])):
-                        with patch("superhuman_mail.send.lifecycle.observe", return_value=_observe(_state(lifecycle.PROVIDER_CONFIRMED, provider_id="message_fixture"))):
-                            with patch("superhuman_mail.send._post_exact_payload", side_effect=post):
-                                with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
-                                    results = list(pool.map(lambda _index: call(), range(2)))
+                with patch("superhuman_mail.send._approval.load_and_verify", return_value=({}, _approval())):
+                    with patch("superhuman_mail.send._attestation.revalidate_for_send", return_value={"outgoing_payload": {"fixture": True}}):
+                        with patch("superhuman_mail.send.lifecycle.resolve_account", return_value=(ACCOUNT, [])):
+                            with patch("superhuman_mail.send.lifecycle.observe", return_value=_observe(_state(lifecycle.PROVIDER_CONFIRMED, provider_id="message_fixture"))):
+                                with patch("superhuman_mail.send._post_exact_payload", side_effect=post):
+                                    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+                                        results = list(pool.map(lambda _index: call(), range(2)))
     assert counter == 1
     assert all(result["status"] == "succeeded" for result in results)
     assert journal_path.exists()

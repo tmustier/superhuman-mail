@@ -159,6 +159,8 @@ def test_not_sent_to_server_never_counts_as_an_accepted_schedule():
     )
     assert result["state"] == lifecycle.REQUESTED
     assert result["outbound_evidence"] is False
+    assert result["send_job"]["not_sent_to_server_present"] is True
+    assert result["send_job"]["not_sent_to_server"] is True
 
 
 @pytest.mark.parametrize(
@@ -172,6 +174,7 @@ def test_terminal_failure_states(job, expected):
     result = _classify(job=job)
     assert result["state"] == expected
     assert result["terminal"] is True
+    assert result["send_job"]["not_sent_to_server_present"] is False
     assert result["outbound_evidence"] is False
 
 

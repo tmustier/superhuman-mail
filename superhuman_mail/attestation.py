@@ -454,6 +454,8 @@ def show_safe(
 
     expired = _parse_iso(str(record["expires_at"])) <= _now()
     source = record.get("source") or {}
+    from . import approval as _approval
+
     return {
         "attestation_id": record["attestation_id"],
         "signature_valid": True,
@@ -469,6 +471,7 @@ def show_safe(
         "binding_match": all(bindings.values()) if checked else None,
         "delay_seconds": record.get("delay_seconds"),
         "fingerprint": (record.get("fingerprint") or {}).get("exact"),
+        "approval_binding": _approval.binding_for_attestation(record),
         "renderer": dict(record.get("renderer") or {}),
         "screenshots": [
             {"path": item.get("path"), "sha256": item.get("sha256")}
@@ -571,6 +574,13 @@ def _fingerprint(
     return {"fields": fields, "exact": sha256(canonical_bytes(fields))}
 
 
+def _preflight_for_attestation(send_module: Any, *args: Any, **kwargs: Any) -> dict[str, Any]:
+    try:
+        return send_module._preflight(*args, **kwargs)
+    except send_module.SendSafetyError as exc:
+        raise AttestationError(exc.code, exc.hint) from exc
+
+
 def create(
     thread_id: str,
     draft_id: str,
@@ -586,7 +596,8 @@ def create(
 
     renderer = renderer or CdpRenderer()
     sid = send._superhuman_id()
-    checked_a = send._preflight(
+    checked_a = _preflight_for_attestation(
+        send,
         thread_id,
         draft_id,
         account=account,
@@ -619,7 +630,8 @@ def create(
         expected_source=source_a,
     )
 
-    checked_b = send._preflight(
+    checked_b = _preflight_for_attestation(
+        send,
         thread_id,
         draft_id,
         account=account,

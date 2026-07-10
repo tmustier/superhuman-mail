@@ -179,6 +179,10 @@ def _provider_proof(
     return candidate, conflict
 
 
+def _has_any_field(job: dict[str, Any], *names: str) -> bool:
+    return any(name in job for name in names)
+
+
 def _has_failure(job: dict[str, Any]) -> bool:
     return any(bool(_field(job, name)) for name in ("failedAt", "failureAt", "error", "failureReason"))
 
@@ -324,6 +328,7 @@ def classify(
             "message_id": _field(job, "messageId", "message_id"),
             "superhuman_id": _field(job, "superhumanId", "superhuman_id"),
             "not_sent_to_server": bool(_field(job, "notSentToServer", "not_sent_to_server")),
+            "not_sent_to_server_present": _has_any_field(job, "notSentToServer", "not_sent_to_server"),
             "present": bool(job),
             "sending": bool(wrapper.get("sending")),
         },

@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 from unittest.mock import ANY, patch
 
+from superhuman_mail import send
 from superhuman_mail.cli import main
 from superhuman_mail._envelope import ok
 
@@ -66,7 +67,7 @@ def test_confirm_passes_attestation_approval_and_wait_and_pending_exits_four(cap
             "send", "--confirm", THREAD, DRAFT,
             "--account", ACCOUNT,
             "--attestation", "attestation_fixture",
-            "--approval-ref", "approval_fixture",
+            "--approval-receipt", "receipt-fixture.json",
             "--delay", "20",
             "--wait", "30",
             "--cdp-url", "http://127.0.0.1:9333",
@@ -79,7 +80,8 @@ def test_confirm_passes_attestation_approval_and_wait_and_pending_exits_four(cap
         delay=20,
         account=ACCOUNT,
         attestation="attestation_fixture",
-        approval_ref="approval_fixture",
+        approval_receipt="receipt-fixture.json",
+        approval_ref=None,
         wait=30.0,
         renderer=ANY,
     )
@@ -89,12 +91,46 @@ def test_confirm_passes_attestation_approval_and_wait_and_pending_exits_four(cap
     assert json.loads(capsys.readouterr().out)["data"]["sent"] is False
 
 
+def test_approval_verify_delegates_external_authority_and_replay_check(capsys):
+    summary = {
+        "authority": "external_ed25519_receipt_v1",
+        "verified": True,
+        "usable": True,
+        "consumed": False,
+    }
+    with patch("superhuman_mail.cli._approval.show_safe", return_value=summary) as verify:
+        code = main([
+            "approval", "verify", "receipt.json",
+            "--attestation", "attestation-fixture",
+        ])
+    assert code == 0
+    verify.assert_called_once_with(
+        "receipt.json",
+        attestation_reference="attestation-fixture",
+    )
+    assert json.loads(capsys.readouterr().out)["data"]["verified"] is True
+
+
 def test_draft_read_passes_lifecycle_filters(capsys):
     with patch("superhuman_mail.cli._draft.read", return_value=ok("draft.read", {"drafts": []})) as read:
         code = main(["draft", "read", THREAD, "--draft-id", DRAFT, "--account", ACCOUNT, "--active-only"])
     assert code == 0
     read.assert_called_once_with(THREAD, draft_id=DRAFT, account=ACCOUNT, active_only=True)
     capsys.readouterr()
+
+
+def test_attest_render_terminal_preflight_returns_json_error_not_traceback(capsys, tmp_path):
+    safety_error = send.SendSafetyError("DRAFT_ALREADY_SENT", "already sent")
+    with patch("superhuman_mail.send._preflight", side_effect=safety_error):
+        code = main([
+            "draft", "attest-render", THREAD, DRAFT,
+            "--account", ACCOUNT,
+            "--output", str(tmp_path),
+        ])
+    result = json.loads(capsys.readouterr().out)
+    assert code == 1
+    assert result["status"] == "failed"
+    assert result["errors"][0]["code"] == "DRAFT_ALREADY_SENT"
 
 
 def test_attestation_show_delegates_signature_and_binding_verification(capsys):

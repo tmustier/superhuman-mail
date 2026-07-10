@@ -21,10 +21,23 @@ TERMINAL_ATTEMPT_STATES = {
     "send_failed",
     "send_aborted",
 }
+PURGEABLE_ATTEMPT_STATES = {
+    "send_failed",
+    "send_aborted",
+}
 
 
 class AttemptConflict(RuntimeError):
     """An existing attempt cannot be reused for a different approval/payload."""
+
+
+class ReceiptClaimError(RuntimeError):
+    """A verified approval receipt cannot be atomically consumed."""
+
+    def __init__(self, code: str, hint: str) -> None:
+        super().__init__(hint)
+        self.code = code
+        self.hint = hint
 
 
 def _now() -> str:
@@ -78,6 +91,13 @@ class AttemptJournal:
                     draft_id TEXT NOT NULL,
                     attestation_id TEXT NOT NULL,
                     approval_ref_hash TEXT NOT NULL,
+                    approval_receipt_id TEXT,
+                    approval_receipt_digest TEXT,
+                    approval_issuer TEXT,
+                    approval_key_id TEXT,
+                    approval_approver TEXT,
+                    approval_issued_at TEXT,
+                    approval_expires_at TEXT,
                     superhuman_id TEXT NOT NULL,
                     outgoing_fingerprint TEXT NOT NULL,
                     created_at TEXT NOT NULL,
@@ -93,8 +113,28 @@ class AttemptJournal:
                     UNIQUE(account_id, draft_id)
                 );
                 CREATE INDEX IF NOT EXISTS attempts_updated_at ON attempts(updated_at);
+                CREATE TABLE IF NOT EXISTS approval_receipt_consumptions (
+                    receipt_id TEXT PRIMARY KEY,
+                    receipt_digest TEXT NOT NULL,
+                    attempt_id TEXT NOT NULL UNIQUE,
+                    consumed_at TEXT NOT NULL,
+                    FOREIGN KEY(attempt_id) REFERENCES attempts(attempt_id)
+                );
                 """
             )
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(attempts)")}
+            migrations = {
+                "approval_receipt_id": "TEXT",
+                "approval_receipt_digest": "TEXT",
+                "approval_issuer": "TEXT",
+                "approval_key_id": "TEXT",
+                "approval_approver": "TEXT",
+                "approval_issued_at": "TEXT",
+                "approval_expires_at": "TEXT",
+            }
+            for column, column_type in migrations.items():
+                if column not in columns:
+                    conn.execute(f"ALTER TABLE attempts ADD COLUMN {column} {column_type}")
         finally:
             conn.close()
             private_file(self.path)
@@ -122,6 +162,18 @@ class AttemptJournal:
         finally:
             conn.close()
 
+    def get_receipt_consumption(self, receipt_id: str) -> dict[str, Any] | None:
+        conn = self._connect()
+        try:
+            return self._row(
+                conn.execute(
+                    "SELECT * FROM approval_receipt_consumptions WHERE receipt_id = ?",
+                    (receipt_id,),
+                ).fetchone()
+            )
+        finally:
+            conn.close()
+
     def create_or_get(
         self,
         *,
@@ -130,13 +182,19 @@ class AttemptJournal:
         thread_id: str,
         draft_id: str,
         attestation_id: str,
-        approval_ref: str,
+        approval_receipt_id: str,
+        approval_receipt_digest: str,
+        approval_issuer: str,
+        approval_key_id: str,
+        approval_approver: str,
+        approval_issued_at: str,
+        approval_expires_at: str,
         superhuman_id: str,
         outgoing_fingerprint: str,
     ) -> tuple[dict[str, Any], bool]:
         """Atomically create one attempt or return its exact compatible row."""
         now = _now()
-        approval_hash = _hash_ref(approval_ref)
+        approval_hash = _hash_ref(approval_receipt_id)
         attempt_id = str(uuid.uuid4())
         conn = self._connect()
         try:
@@ -151,6 +209,13 @@ class AttemptJournal:
                     "thread_id": thread_id,
                     "attestation_id": attestation_id,
                     "approval_ref_hash": approval_hash,
+                    "approval_receipt_id": approval_receipt_id,
+                    "approval_receipt_digest": approval_receipt_digest,
+                    "approval_issuer": approval_issuer,
+                    "approval_key_id": approval_key_id,
+                    "approval_approver": approval_approver,
+                    "approval_issued_at": approval_issued_at,
+                    "approval_expires_at": approval_expires_at,
                     "superhuman_id": superhuman_id,
                     "outgoing_fingerprint": outgoing_fingerprint,
                 }
@@ -165,6 +230,9 @@ class AttemptJournal:
                             UPDATE attempts SET
                                 attempt_id = ?, account_hash = ?, thread_id = ?,
                                 attestation_id = ?, approval_ref_hash = ?,
+                                approval_receipt_id = ?, approval_receipt_digest = ?,
+                                approval_issuer = ?, approval_key_id = ?,
+                                approval_approver = ?, approval_issued_at = ?, approval_expires_at = ?,
                                 superhuman_id = ?, outgoing_fingerprint = ?,
                                 created_at = ?, updated_at = ?, state = 'prepared',
                                 response_class = NULL, last_error = NULL,
@@ -178,6 +246,13 @@ class AttemptJournal:
                                 thread_id,
                                 attestation_id,
                                 approval_hash,
+                                approval_receipt_id,
+                                approval_receipt_digest,
+                                approval_issuer,
+                                approval_key_id,
+                                approval_approver,
+                                approval_issued_at,
+                                approval_expires_at,
                                 superhuman_id,
                                 outgoing_fingerprint,
                                 now,
@@ -202,9 +277,11 @@ class AttemptJournal:
                 """
                 INSERT INTO attempts (
                     attempt_id, account_id, account_hash, thread_id, draft_id,
-                    attestation_id, approval_ref_hash, superhuman_id,
-                    outgoing_fingerprint, created_at, updated_at, state
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'prepared')
+                    attestation_id, approval_ref_hash, approval_receipt_id,
+                    approval_receipt_digest, approval_issuer, approval_key_id,
+                    approval_approver, approval_issued_at, approval_expires_at,
+                    superhuman_id, outgoing_fingerprint, created_at, updated_at, state
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'prepared')
                 """,
                 (
                     attempt_id,
@@ -214,6 +291,13 @@ class AttemptJournal:
                     draft_id,
                     attestation_id,
                     approval_hash,
+                    approval_receipt_id,
+                    approval_receipt_digest,
+                    approval_issuer,
+                    approval_key_id,
+                    approval_approver,
+                    approval_issued_at,
+                    approval_expires_at,
                     superhuman_id,
                     outgoing_fingerprint,
                     now,
@@ -231,8 +315,15 @@ class AttemptJournal:
         finally:
             conn.close()
 
-    def claim_post(self, attempt_id: str) -> tuple[dict[str, Any], bool]:
-        """Claim the only automatic POST before any network bytes are attempted."""
+    def claim_post(
+        self,
+        attempt_id: str,
+        *,
+        approval_receipt_id: str,
+        approval_receipt_digest: str,
+        approval_expires_at: str,
+    ) -> tuple[dict[str, Any], bool]:
+        """Atomically consume one approval receipt and claim the only POST."""
         conn = self._connect()
         try:
             conn.execute("BEGIN IMMEDIATE")
@@ -244,7 +335,43 @@ class AttemptJournal:
             if current["state"] != "prepared" or int(current["post_count"]) != 0:
                 conn.execute("COMMIT")
                 return current, False
-            now = _now()
+            if (
+                current.get("approval_receipt_id") != approval_receipt_id
+                or current.get("approval_receipt_digest") != approval_receipt_digest
+                or current.get("approval_expires_at") != approval_expires_at
+            ):
+                conn.execute("ROLLBACK")
+                raise ReceiptClaimError(
+                    "APPROVAL_BINDING_MISMATCH",
+                    "Attempt and approval receipt bindings differ",
+                )
+            now_dt = datetime.now(timezone.utc)
+            try:
+                expires_dt = datetime.fromisoformat(approval_expires_at.replace("Z", "+00:00"))
+                if expires_dt.tzinfo is None:
+                    expires_dt = expires_dt.replace(tzinfo=timezone.utc)
+            except ValueError as exc:
+                conn.execute("ROLLBACK")
+                raise ReceiptClaimError("APPROVAL_RECEIPT_INVALID", "Receipt expiry is malformed") from exc
+            if expires_dt.astimezone(timezone.utc) <= now_dt:
+                conn.execute("ROLLBACK")
+                raise ReceiptClaimError("APPROVAL_RECEIPT_EXPIRED", "Receipt expired before POST claim")
+            consumed = conn.execute(
+                "SELECT * FROM approval_receipt_consumptions WHERE receipt_id = ?",
+                (approval_receipt_id,),
+            ).fetchone()
+            if consumed is not None:
+                conn.execute("ROLLBACK")
+                raise ReceiptClaimError("APPROVAL_RECEIPT_REPLAYED", "Approval receipt was already consumed")
+            now = now_dt.isoformat(timespec="microseconds").replace("+00:00", "Z")
+            conn.execute(
+                """
+                INSERT INTO approval_receipt_consumptions (
+                    receipt_id, receipt_digest, attempt_id, consumed_at
+                ) VALUES (?, ?, ?, ?)
+                """,
+                (approval_receipt_id, approval_receipt_digest, attempt_id, now),
+            )
             conn.execute(
                 "UPDATE attempts SET state = 'posting', post_count = 1, updated_at = ? WHERE attempt_id = ?",
                 (now, attempt_id),
@@ -299,12 +426,12 @@ class AttemptJournal:
         cutoff = (datetime.now(timezone.utc) - timedelta(days=retention_days)).isoformat(
             timespec="microseconds"
         ).replace("+00:00", "Z")
-        placeholders = ",".join("?" for _ in TERMINAL_ATTEMPT_STATES)
+        placeholders = ",".join("?" for _ in PURGEABLE_ATTEMPT_STATES)
         conn = self._connect()
         try:
             changed = conn.execute(
                 f"DELETE FROM attempts WHERE state IN ({placeholders}) AND updated_at < ?",
-                (*sorted(TERMINAL_ATTEMPT_STATES), cutoff),
+                (*sorted(PURGEABLE_ATTEMPT_STATES), cutoff),
             )
             return int(changed.rowcount)
         finally:

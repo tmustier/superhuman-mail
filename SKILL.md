@@ -56,11 +56,12 @@ Use this workflow every time:
 3. open that exact draft in a CDP-enabled Superhuman app without editing it
 4. run `shm draft attest-render ... --account EMAIL --output PRIVATE_DIR`
 5. verify/display only `shm attestation show ...` safe metadata and exact-render screenshots
-6. show the complete intended message to the user and obtain explicit approval
-7. pass the opaque approval reference and attestation through the configured outbound send gate/grace period
-8. let the gate invoke `shm send --confirm ...`; then wait for `sent_provider_confirmed`
+6. show the complete intended message to the user through the trusted approval broker
+7. obtain its short-lived Ed25519 receipt bound to the exact `approval_binding`
+8. verify it with `shm approval verify RECEIPT --attestation ID`
+9. let the trusted executor run the outbound gate/grace period and `shm send --confirm ... --approval-receipt RECEIPT`; then wait for `sent_provider_confirmed`
 
-Never treat draft timestamps, labels, HTTP acceptance, `sent_backend_confirmed`, or exit `4` as a completed send. Never create CRM/follow-up work until `provider_confirmed: true`. `--approval-ref` is audit correlation, not technical authority; unattended agents must not invoke `--confirm` (`unattended_send_eligible: false`).
+Never treat draft timestamps, labels, HTTP acceptance, `sent_backend_confirmed`, or exit `4` as a completed send. Never create CRM/follow-up work until `provider_confirmed: true`. Caller-supplied `--approval-ref` never authorizes. Until a trusted issuer root and credential-isolated executor are deployed, confirm must fail closed and unattended agents must not have Superhuman transport credentials.
 
 ## Command surface
 
@@ -141,9 +142,10 @@ shm comment discard <thread_id> <comment_id>
 ```bash
 shm send --dry-run <thread_id> <draft_id> --account email
 shm attestation show <id-or-path> --account email --thread-id <thread_id> --draft-id <draft_id>
+shm approval verify <receipt.json> --attestation <id-or-path>
 shm send status <thread_id> <draft_id> --account email [--wait seconds]
-# The configured send gate invokes this only after explicit approval + grace:
-shm send --confirm <thread_id> <draft_id> --account email --attestation <id-or-path> --approval-ref <opaque-ref> [--wait seconds]
+# The trusted executor invokes this only with an externally signed exact receipt:
+shm send --confirm <thread_id> <draft_id> --account email --attestation <id-or-path> --approval-receipt <receipt.json> [--wait seconds]
 shm setup [--config path] [--email address]
 shm doctor
 shm schema [command]
@@ -169,7 +171,7 @@ shm draft attest-render <thread_id> <draft_id> --account owner@example.com --out
 shm attestation show <attestation_id> --account owner@example.com --thread-id <thread_id> --draft-id <draft_id>
 ```
 
-After the user explicitly approves, route the attestation ID and opaque approval reference through the configured outbound send gate. Do not invoke direct transport outside that gate. Reconcile with `shm send status ...` until provider-confirmed.
+After the user explicitly approves, the external broker issues a single-use receipt for the attestation's exact binding. Verify it read-only, then let the credential-isolated trusted executor route the attestation and receipt through the outbound send gate. Do not invoke local/raw transport outside that boundary. Reconcile with `shm send status ...` until provider-confirmed.
 
 ### 2. Get read receipts / recent opens
 

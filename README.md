@@ -140,7 +140,8 @@ shm comment discard <thread_id> <comment_id>
 shm send --dry-run <thread_id> <draft_id> --account owner@example.com
 shm draft attest-render <thread_id> <draft_id> --account owner@example.com --output ./private-preview [--window-id ID]
 shm attestation show <id-or-path> --account owner@example.com --thread-id <thread_id> --draft-id <draft_id>
-shm send --confirm <thread_id> <draft_id> --account owner@example.com --attestation <id-or-path> --approval-ref <opaque-ref> --wait 120
+shm approval verify <receipt.json> --attestation <id-or-path>
+shm send --confirm <thread_id> <draft_id> --account owner@example.com --attestation <id-or-path> --approval-receipt <receipt.json> --wait 120
 shm send status <thread_id> <draft_id> --account owner@example.com --wait 120
 
 # Diagnostics
@@ -152,9 +153,9 @@ shm schema draft.forward
 
 ### Strict send semantics
 
-`send --dry-run` is metadata/lifecycle validation only; it reports `send_eligible: false` until an exact live-Superhuman render is attested. `send --confirm` always reruns the renderer after the external grace period and posts only freshly probed bytes equal to approval.
+`send --dry-run` is metadata/lifecycle validation only; it reports `send_eligible: false` until an exact live-Superhuman render is attested. `send --confirm` requires an externally issued Ed25519 receipt bound to that exact attestation, reruns the renderer after the external grace period, atomically consumes the single-use receipt with the local POST claim, and posts only freshly probed matching bytes. Caller-supplied `--approval-ref` never authorizes.
 
-Only `state: sent_provider_confirmed` returns `sent: true`. Accepted/pending/unknown/backend-only or inconsistent possible-send outcomes exit `4`; definitely rejected/failed outcomes exit `1`; provider-confirmed or explicitly scheduled outcomes exit `0`. The local journal prevents duplicate POSTs only among cooperating `shm` processes sharing one state directory—global exactly-once is not claimed. `--approval-ref` is correlation only (`approval_verified: false`, `unattended_send_eligible: false`); unattended automation must hard-disable confirm until an external signed approval issuer exists.
+Only `state: sent_provider_confirmed` returns `sent: true`. Accepted/pending/unknown/backend-only or inconsistent possible-send outcomes exit `4`; definitely rejected/failed outcomes exit `1`; provider-confirmed or explicitly scheduled outcomes exit `0`. The local journal prevents duplicate POSTs only among cooperating trusted-executor processes sharing one state directory—global exactly-once is not claimed. Until an external issuer public key is pinned and the transport credentials are isolated in a trusted executor, confirm fails closed with `APPROVAL_TRUST_UNAVAILABLE`.
 
 See [`docs/send-safety.md`](docs/send-safety.md) for renderer setup, lifecycle evidence, redaction, and retry rules.
 
@@ -224,10 +225,11 @@ result = c.draft.share("19d001f35612a211", "draft00abc123")
 result = c.send.validate("19d001f35612a211", "draft00abc123", account="owner@example.com")
 attested = c.draft.attest_render("19d001f35612a211", "draft00abc123",
                                  account="owner@example.com", output_dir=Path("./private-preview"))
+receipt = c.approval.verify("receipt.json", attestation=attested["attestation_id"])
 result = c.send.execute("19d001f35612a211", "draft00abc123",
                         account="owner@example.com",
                         attestation=attested["attestation_id"],
-                        approval_ref="opaque-approval-reference")
+                        approval_receipt="receipt.json")
 ```
 
 All methods return the same envelope dict as the CLI.
@@ -276,11 +278,12 @@ pyproject.toml
 - `docs/superhuman-read-statuses.md` — read receipts, Recent Opens, and the thread userdata model
 - `docs/official-superhuman-mcp-beta.md` — notes on the official MCP beta
 - `docs/draft-lifecycle-render-attestation.md` — RCA and lifecycle/render-attestation design
-- `docs/send-safety.md` — lifecycle evidence, exact render attestation, reconciliation, and exit contracts
+- `docs/send-safety.md` — lifecycle evidence, exact render attestation, external approval, reconciliation, and exit contracts
+- `docs/approval-receipt-issuer-contract.md` / `approval-receipt-v1.schema.json` — trusted issuer/executor interface
 
 ## Safety
 
-- `send` is irreversible and requires exact attestation plus an opaque explicit-approval reference
+- `send` is irreversible and requires exact attestation plus an externally signed, short-lived, exact-binding approval receipt
 - execute-time lifecycle validation blocks terminal source-draft residue and existing pending/scheduled jobs
 - HTTP acceptance is pending, never proof of delivery; provider-confirmed immutable identity is required for `sent: true`
 - retries reuse one local attempt identity and reconcile before any further action

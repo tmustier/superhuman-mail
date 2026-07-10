@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from . import approval as _approval
 from . import attestation as _attestation
 from . import comment as _comment
 from . import draft as _draft
@@ -139,6 +140,14 @@ class _SendOps:
         return _send.execute(thread_id, draft_id, **kwargs)
 
 
+class _ApprovalOps:
+    """External exact-send approval verification (read-only)."""
+
+    def verify(self, reference: str, *, attestation: str, **kwargs: Any) -> dict[str, Any]:
+        """Verify authority, exact binding, expiry, and replay state."""
+        return _approval.show_safe(reference, attestation_reference=attestation, **kwargs)
+
+
 class _ShareOps:
     """Backward-compatible share/unshare wrapper."""
 
@@ -168,4 +177,5 @@ class Client:
         self.draft = _DraftOps()
         self.comment = _CommentOps()
         self.send = _SendOps()
+        self.approval = _ApprovalOps()
         self.share = _ShareOps()

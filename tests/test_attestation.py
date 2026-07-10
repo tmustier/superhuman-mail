@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 import pytest
 
-from superhuman_mail import attestation, lifecycle
+from superhuman_mail import approval, attestation, lifecycle
 
 THREAD = "thread_fixture"
 DRAFT = "draft_fixture"
@@ -145,9 +145,33 @@ def test_bundled_renderer_declares_versioned_payload_contract():
     contract = json.loads(completed.stdout)
     assert contract["adapter_version"] == attestation.ADAPTER_VERSION
     assert contract["mutates_mail_state"] is False
+    assert contract["blocks_non_idempotent_before_dispatch"] is True
+    assert contract["network_offline_during_render"] is True
+    assert set(contract["read_only_post_actions"]) == set(attestation._READ_ONLY_POST_ACTIONS)
     assert contract["reminder"] == "persisted_draft_only_current_build"
     assert "html_body" in contract["outgoing_fields"]
     assert "reminder" not in contract["outgoing_fields"]
+
+
+def test_bundled_renderer_policy_aborts_write_before_dispatch():
+    script = Path(attestation.__file__).with_name("renderer_probe.js")
+    requests = [
+        {"method": "POST", "url": "https://mail.superhuman.com/~backend/v3/userdata.read"},
+        {"method": "POST", "url": "https://mail.superhuman.com/~backend/v3/userdata.writeMessage"},
+        {"method": "DELETE", "url": "https://example.test/anything"},
+    ]
+    completed = subprocess.run(
+        ["node", str(script), "--test-network-policy"],
+        input=json.dumps(requests),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    decisions = json.loads(completed.stdout)
+    assert [item["disposition"] for item in decisions] == ["continue", "fail", "fail"]
+    source = script.read_text()
+    assert 'this.send("Fetch.failRequest"' in source
+    assert source.index('client.send("Fetch.enable"') < source.index('client.send("Page.bringToFront"')
 
 
 def test_probe_network_policy_fails_closed_on_unknown_non_idempotent_requests():
@@ -203,6 +227,7 @@ def test_safe_show_verifies_binding_and_redacts_all_mail_content(tmp_path):
     assert summary["signature_valid"] is True
     assert summary["usable"] is True
     assert summary["binding_match"] is True
+    assert summary["approval_binding"] == approval.binding_for_attestation(record)
     assert summary["summary"] == {
         "to_count": 1,
         "cc_count": 0,
