@@ -211,6 +211,20 @@ def test_unknown_or_wrong_key_id_is_rejected_before_signature_trust():
     assert caught.value.code == "APPROVAL_ISSUER_UNTRUSTED"
 
 
+def test_malformed_allowed_approver_configuration_fails_closed():
+    private = Ed25519PrivateKey.generate()
+    roots = _roots(private)
+    roots[ISSUER]["allowed_approvers"] = APPROVER
+    with pytest.raises(approval.ApprovalError) as caught:
+        approval.verify(
+            _receipt(private),
+            attestation=_attestation(),
+            roots=roots,
+            now=NOW,
+        )
+    assert caught.value.code == "APPROVAL_TRUST_UNAVAILABLE"
+
+
 def test_signed_but_unauthorized_approver_is_rejected():
     private = Ed25519PrivateKey.generate()
     with pytest.raises(approval.ApprovalError) as caught:

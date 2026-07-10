@@ -122,7 +122,7 @@ class AttemptJournal:
                 );
                 """
             )
-            columns = {row[1] for row in conn.execute("PRAGMA table_info(attempts)")}
+            conn.execute("BEGIN IMMEDIATE")
             migrations = {
                 "approval_receipt_id": "TEXT",
                 "approval_receipt_digest": "TEXT",
@@ -133,8 +133,14 @@ class AttemptJournal:
                 "approval_expires_at": "TEXT",
             }
             for column, column_type in migrations.items():
+                columns = {row[1] for row in conn.execute("PRAGMA table_info(attempts)")}
                 if column not in columns:
                     conn.execute(f"ALTER TABLE attempts ADD COLUMN {column} {column_type}")
+            conn.execute("COMMIT")
+        except Exception:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
         finally:
             conn.close()
             private_file(self.path)

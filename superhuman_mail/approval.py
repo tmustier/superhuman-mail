@@ -66,7 +66,7 @@ def _b64decode(value: str) -> bytes:
     raw = value.encode()
     raw += b"=" * (-len(raw) % 4)
     try:
-        return base64.urlsafe_b64decode(raw)
+        return base64.b64decode(raw, altchars=b"-_", validate=True)
     except Exception as exc:
         raise ApprovalError("APPROVAL_RECEIPT_INVALID", "Approval receipt contains invalid base64") from exc
 
@@ -229,6 +229,13 @@ def verify(
     if not isinstance(issuer, dict) or issuer.get("key_id") != record["key_id"]:
         raise ApprovalError("APPROVAL_ISSUER_UNTRUSTED", "Approval receipt issuer/key is not pinned")
     allowed_approvers = issuer.get("allowed_approvers") or []
+    if (
+        not isinstance(issuer.get("public_key"), str)
+        or not isinstance(allowed_approvers, list)
+        or not allowed_approvers
+        or any(not isinstance(item, str) or not item for item in allowed_approvers)
+    ):
+        raise ApprovalError("APPROVAL_TRUST_UNAVAILABLE", "Pinned approval issuer configuration is malformed")
     principal = record["approver"]["principal"]
     if principal not in allowed_approvers:
         raise ApprovalError("APPROVER_UNAUTHORIZED", "Approval receipt approver is not authorized")

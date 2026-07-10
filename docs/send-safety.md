@@ -87,7 +87,8 @@ The adapter:
 - mirrors the current build's reminder behavior: reminder stays on the persisted, fingerprint-bound draft and is not copied into `toJsonRequest()`;
 - rejects inline signature uploads that cannot be materialized read-only;
 - captures the compose view and a network-disabled rendering of the exact outgoing HTML;
-- enables CDP Fetch interception and target-offline mode before focus/render work, aborting every non-allowlisted non-idempotent request before dispatch and failing the attestation if the app attempted one;
+- requires the exact draft model to already be visible and never focuses or navigates the app;
+- enables CDP Fetch interception and target-offline mode before render work, aborting every non-allowlisted non-idempotent request before dispatch and failing the attestation if the app attempted one;
 - re-reads the server snapshot and history after rendering;
 - signs an expiring canonical artifact with a Keychain-held HMAC key.
 

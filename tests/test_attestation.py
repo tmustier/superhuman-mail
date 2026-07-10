@@ -171,7 +171,8 @@ def test_bundled_renderer_policy_aborts_write_before_dispatch():
     assert [item["disposition"] for item in decisions] == ["continue", "fail", "fail"]
     source = script.read_text()
     assert 'this.send("Fetch.failRequest"' in source
-    assert source.index('client.send("Fetch.enable"') < source.index('client.send("Page.bringToFront"')
+    assert 'client.send("Page.bringToFront"' not in source
+    assert "probe will not focus or navigate" in source
 
 
 def test_probe_network_policy_fails_closed_on_unknown_non_idempotent_requests():

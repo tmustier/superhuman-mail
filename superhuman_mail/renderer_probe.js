@@ -356,7 +356,6 @@ async function main() {
   const targetsResponse = await fetch(`${cdpBase}/json/list`);
   if (!targetsResponse.ok) throw new Error(`CDP discovery failed: HTTP ${targetsResponse.status}`);
   const targets = await targetsResponse.json();
-  const exactThreadPath = `/thread/${input.thread_id}`;
   const candidates = targets.filter(item =>
     item.type === "page" &&
     String(item.url || "").startsWith("https://mail.superhuman.com/") &&
@@ -364,7 +363,6 @@ async function main() {
     item.webSocketDebuggerUrl
   );
   let target = null;
-  let firstModelTarget = null;
   const modelCheck = `(() => {
     const wanted = ${JSON.stringify(input.draft_id)};
     const seen = new WeakSet();
@@ -392,7 +390,6 @@ async function main() {
         returnByValue: true,
       });
       const value = JSON.parse(checked.result && checked.result.value || "{}");
-      if (value.hasModel && !firstModelTarget) firstModelTarget = candidate;
       if (value.hasModel && value.visible) {
         target = candidate;
         break;
@@ -403,8 +400,9 @@ async function main() {
       inspector.close();
     }
   }
-  target = target || firstModelTarget || candidates.find(item => String(item.url || "").includes(exactThreadPath));
-  if (!target) throw new Error("No visible Superhuman page target found on the CDP endpoint");
+  if (!target) {
+    throw new Error(`DRAFT_MODEL_NOT_FOUND: exact draft ${input.draft_id} must already be visible; probe will not focus or navigate`);
+  }
   if (process.env.SHM_RENDERER_DEBUG) process.stderr.write(`probe:target ${target.id} ${target.url}\n`);
 
   const client = new CDP(target.webSocketDebuggerUrl);
@@ -424,10 +422,9 @@ async function main() {
     networkOffline = true;
     client.events = [];
     client.interceptions = [];
-    // Fetch interception is active before focus/render work so an autosave or
-    // other non-idempotent request is aborted before any bytes are dispatched.
-    await client.send("Page.bringToFront");
-
+    // The probe never focuses/navigates. Fetch interception and offline mode
+    // are active before render work so an autosave or other non-idempotent
+    // request is aborted before any bytes are dispatched.
     const renderExpression = expressionFor(input);
     if (process.env.SHM_RENDERER_DEBUG_EXPRESSION) {
       fs.writeFileSync(process.env.SHM_RENDERER_DEBUG_EXPRESSION, renderExpression);
