@@ -256,6 +256,7 @@ pyproject.toml
 - `docs/superhuman-api-endpoints.md` — reverse-engineered endpoint inventory
 - `docs/superhuman-read-statuses.md` — read receipts, Recent Opens, and the thread userdata model
 - `docs/official-superhuman-mcp-beta.md` — notes on the official MCP beta
+- `docs/draft-lifecycle-render-attestation.md` — RCA and proposed lifecycle/render-attestation design
 
 ## Safety
 
