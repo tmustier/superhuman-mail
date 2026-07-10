@@ -14,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 from email.utils import parseaddr
 from pathlib import Path
 from typing import Any, Protocol
+from urllib.parse import urlparse
 
 from ._state import private_file, state_dir
 
@@ -22,14 +23,33 @@ ADAPTER_VERSION = "superhuman-cdp-v1"
 DEFAULT_TTL_SECONDS = 15 * 60
 DEFAULT_CDP_URL = "http://127.0.0.1:9222"
 DEFAULT_ALLOWED_RENDERER_BUILDS = {("1041.0.15", "2026-07-09T19:06:39Z")}
-_WRITE_URL_MARKERS = (
-    "/messages/send",
-    "userdata.writemessage",
-    "attachments.upload",
-    "comments.",
-    "cancel",
-    "postpone",
-    "unschedule",
+_ATTACHMENT_HOST_SUFFIXES = (
+    ".googleapis.com",
+    ".googleusercontent.com",
+    ".superhuman.com",
+    ".firebaseio.com",
+)
+_READ_ONLY_POST_ACTIONS = (
+    "userdata.getthreads",
+    "userdata.read",
+    "userdata.searchhistory",
+    "userdata.sync",
+    "autolabels.preview",
+    "labels.recentchanges",
+    "labels.resync",
+    "autodrafts.previeweascheduling",
+    "smartsend.gettimerange",
+    "sessions.getcsrftoken",
+    "sessions.gettokens",
+    "teams.caninvite",
+    "teams.classify",
+    "teams.getbillingfeaturesbysku",
+    "teams.members",
+    "teams.suggest",
+    "links.content",
+    "translate.detectlanguage",
+    "users.getreferral",
+    "users.refreshaliases",
 )
 
 
@@ -163,6 +183,16 @@ def attachment_digests(draft: dict[str, Any]) -> dict[str, str]:
                 "UNATTESTABLE_ATTACHMENT",
                 f"Attachment {identifier} has neither a stable provider digest nor readable bytes",
             )
+        parsed_url = urlparse(str(url))
+        hostname = (parsed_url.hostname or "").lower()
+        if parsed_url.scheme != "https" or not any(
+            hostname == suffix[1:] or hostname.endswith(suffix)
+            for suffix in _ATTACHMENT_HOST_SUFFIXES
+        ):
+            raise AttestationError(
+                "UNATTESTABLE_ATTACHMENT",
+                f"Attachment {identifier} uses a non-allowlisted byte source",
+            )
         try:
             request = urllib.request.Request(str(url), method="GET")
             digest_hash = hashlib.sha256()
@@ -179,29 +209,21 @@ def attachment_digests(draft: dict[str, Any]) -> dict[str, str]:
 
 
 def _renderer_build_allowed(app_version: str, web_version: str) -> bool:
-    raw_builds = os.environ.get("SHM_RENDERER_ALLOW_BUILDS")
-    if raw_builds:
-        allowed: set[tuple[str, str]] = set()
-        for item in raw_builds.split(","):
-            app, separator, web = item.strip().partition("@")
-            if separator and app and web:
-                allowed.add((app, web))
-        return (app_version, web_version) in allowed
-    # Web-only override is retained for deterministic fixture tests and must be
-    # an explicit operator choice; production defaults bind both versions.
-    raw_versions = os.environ.get("SHM_RENDERER_ALLOW_VERSIONS")
-    if raw_versions:
-        return web_version in {item.strip() for item in raw_versions.split(",") if item.strip()}
     return (app_version, web_version) in DEFAULT_ALLOWED_RENDERER_BUILDS
 
 
 def _network_writes(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Fail closed on every non-idempotent probe request not explicitly read-only."""
     blocked = []
     for event in events:
         method = str(event.get("method") or "GET").upper()
         url = str(event.get("url") or "").lower()
-        if method not in {"GET", "HEAD", "OPTIONS"} and any(marker in url for marker in _WRITE_URL_MARKERS):
-            blocked.append({"method": method, "url": url})
+        if method in {"GET", "HEAD", "OPTIONS"}:
+            continue
+        action = urlparse(url).path.rstrip("/").rsplit("/", 1)[-1]
+        if method == "POST" and action in _READ_ONLY_POST_ACTIONS:
+            continue
+        blocked.append({"method": method, "url": url})
     return blocked
 
 
@@ -221,6 +243,9 @@ class CdpRenderer:
         self.script = Path(__file__).with_name("renderer_probe.js")
 
     def probe(self, request: dict[str, Any], *, output_dir: Path) -> dict[str, Any]:
+        parsed_cdp = urlparse(self.cdp_url)
+        if parsed_cdp.scheme not in {"http", "https"} or parsed_cdp.hostname not in {"127.0.0.1", "::1", "localhost"}:
+            raise AttestationError("RENDERER_ENDPOINT_UNSAFE", "Exact renderer CDP endpoint must be loopback-local")
         output_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         try:
             output_dir.chmod(0o700)
@@ -253,16 +278,6 @@ class CdpRenderer:
 
 
 def _attestation_key(*, create: bool) -> bytes:
-    env = os.environ.get("SHM_ATTESTATION_KEY")
-    if env:
-        try:
-            key = base64.urlsafe_b64decode(env.encode())
-        except Exception as exc:
-            raise AttestationError("ATTESTATION_KEY_INVALID", "SHM_ATTESTATION_KEY is not urlsafe base64") from exc
-        if len(key) < 32:
-            raise AttestationError("ATTESTATION_KEY_INVALID", "Attestation HMAC key must contain at least 32 bytes")
-        return key
-
     service = "superhuman-mail-attestation-v1"
     user = getpass.getuser()
     found = subprocess.run(
@@ -311,7 +326,41 @@ def _seal(record: dict[str, Any]) -> dict[str, Any]:
     return {**with_id, "signature": f"hmac-sha256:{signature}"}
 
 
+def _validate_record_structure(record: dict[str, Any]) -> None:
+    required_scalars = (
+        "attestation_id",
+        "signature",
+        "created_at",
+        "expires_at",
+        "thread_id",
+        "draft_id",
+        "superhuman_id",
+    )
+    required_dicts = ("account", "fingerprint", "renderer", "source", "outgoing_payload")
+    if any(not isinstance(record.get(key), str) or not record.get(key) for key in required_scalars):
+        raise AttestationError("ATTESTATION_INVALID", "Attestation is missing required scalar fields")
+    if any(not isinstance(record.get(key), dict) for key in required_dicts):
+        raise AttestationError("ATTESTATION_INVALID", "Attestation is missing required object fields")
+    if not all((record["account"].get("email"), record["account"].get("provider_user_id"))):
+        raise AttestationError("ATTESTATION_INVALID", "Attestation account binding is malformed")
+    if not record["fingerprint"].get("exact"):
+        raise AttestationError("ATTESTATION_INVALID", "Attestation fingerprint is malformed")
+    if not all((record["renderer"].get("adapter_version"), record["renderer"].get("app_version"), record["renderer"].get("web_version"))):
+        raise AttestationError("ATTESTATION_INVALID", "Attestation renderer binding is malformed")
+    if not isinstance(record.get("screenshots"), list) or any(
+        not isinstance(item, dict) for item in record["screenshots"]
+    ):
+        raise AttestationError("ATTESTATION_INVALID", "Attestation screenshots are malformed")
+    if not isinstance(record.get("send_eligible"), bool):
+        raise AttestationError("ATTESTATION_INVALID", "Attestation eligibility is malformed")
+    try:
+        _parse_iso(record["expires_at"])
+    except (TypeError, ValueError) as exc:
+        raise AttestationError("ATTESTATION_INVALID", "Attestation expiry is malformed") from exc
+
+
 def verify(record: dict[str, Any], *, require_unexpired: bool = True) -> None:
+    _validate_record_structure(record)
     expected_id = hashlib.sha256(canonical_bytes(_unsigned(record))).hexdigest()
     if not hmac.compare_digest(str(record.get("attestation_id") or ""), expected_id):
         raise AttestationError("ATTESTATION_TAMPERED", "Attestation ID does not match its canonical content")
@@ -365,11 +414,14 @@ def save(record: dict[str, Any], *, output_dir: Path | None = None) -> Path:
 
 
 def load(reference: str | Path) -> dict[str, Any]:
-    candidate = Path(reference).expanduser()
-    if not candidate.exists():
-        candidate = _artifact_dir() / f"{reference}.json"
-    if not candidate.exists():
-        raise AttestationError("ATTESTATION_NOT_FOUND", f"Attestation not found: {reference}")
+    try:
+        candidate = Path(reference).expanduser()
+        if not candidate.exists():
+            candidate = _artifact_dir() / f"{reference}.json"
+        if not candidate.exists():
+            raise AttestationError("ATTESTATION_NOT_FOUND", f"Attestation not found: {reference}")
+    except OSError as exc:
+        raise AttestationError("ATTESTATION_NOT_FOUND", "Attestation reference is not a valid local path or ID") from exc
     try:
         record = json.loads(candidate.read_text())
     except (OSError, json.JSONDecodeError) as exc:

@@ -8,7 +8,7 @@ This safety release replaces ambiguous draft/send behavior with typed lifecycle,
 
 - `shm send --confirm` now requires `--account`, `--attestation`, and `--approval-ref`
 - HTTP acceptance no longer returns unconditional `sent: true`
-- pending/backend-only/unknown outcomes exit `4`; only provider-confirmed immediate sends return sent success
+- pending/backend-only/unknown/inconsistent possible-send outcomes exit `4`; only provider-confirmed immediate sends return sent success
 - customer sends have no raw-HTML or unattested fallback
 
 ### Added
@@ -20,6 +20,7 @@ This safety release replaces ambiguous draft/send behavior with typed lifecycle,
 - exact renderer attestation through the live Superhuman DraftModel/editor/BodyContent pipeline
 - post-grace second no-write renderer probe and complete payload/source/version/signature/attachment stale binding
 - signed, expiring local attestation artifacts and safe `shm attestation show` inspection
+- explicit approval-boundary output: `--approval-ref` is correlation only and unattended confirm is ineligible without an external issuer
 - macOS native-window screenshot fallback for Electron CDP targets
 - adversarial tests for terminal DRAFT residue, optimistic SENT overlays, delayed completion, lost responses, local concurrency, stale payloads, attachment verification, privacy, and provider gating
 
@@ -29,7 +30,7 @@ This safety release replaces ambiguous draft/send behavior with typed lifecycle,
 - only an unambiguously linked immutable provider `SENT` message sets `sent: true`
 - local idempotency is explicitly scoped to cooperating processes sharing one journal; cross-machine/global exactly-once is not claimed
 - full attestation artifacts stay in `0700`/`0600` local storage; CLI inspection redacts message content and stable private provider IDs
-- Superhuman renderer versions are allowlisted and fail closed on drift
+- Superhuman app+web renderer builds are code-allowlisted, non-idempotent probe traffic fails closed, and signing keys come only from Keychain
 
 ## v0.2.1 — 2026-03-24
 

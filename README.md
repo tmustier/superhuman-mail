@@ -154,7 +154,7 @@ shm schema draft.forward
 
 `send --dry-run` is metadata/lifecycle validation only; it reports `send_eligible: false` until an exact live-Superhuman render is attested. `send --confirm` always reruns the renderer after the external grace period and posts only freshly probed bytes equal to approval.
 
-Only `state: sent_provider_confirmed` returns `sent: true`. Accepted/pending/unknown/backend-only outcomes exit `4`; rejected/failed outcomes exit `1`; provider-confirmed or explicitly scheduled outcomes exit `0`. The local journal prevents duplicate POSTs only among cooperating `shm` processes sharing one state directory—global exactly-once is not claimed.
+Only `state: sent_provider_confirmed` returns `sent: true`. Accepted/pending/unknown/backend-only or inconsistent possible-send outcomes exit `4`; definitely rejected/failed outcomes exit `1`; provider-confirmed or explicitly scheduled outcomes exit `0`. The local journal prevents duplicate POSTs only among cooperating `shm` processes sharing one state directory—global exactly-once is not claimed. `--approval-ref` is correlation only (`approval_verified: false`, `unattended_send_eligible: false`); unattended automation must hard-disable confirm until an external signed approval issuer exists.
 
 See [`docs/send-safety.md`](docs/send-safety.md) for renderer setup, lifecycle evidence, redaction, and retry rules.
 

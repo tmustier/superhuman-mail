@@ -62,7 +62,7 @@ def _observed(state=lifecycle.ACTIVE, *, draft=None):
 def test_validate_and_execute_block_non_active_lifecycle_before_transport(state, code):
     with patch("superhuman_mail.send.lifecycle.observe", return_value=_observed(state)):
         with patch("superhuman_mail.send.urllib.request.urlopen") as urlopen:
-            validated = send.validate(THREAD, DRAFT)
+            validated = send.validate(THREAD, DRAFT, account=ACCOUNT["email"])
             executed = send.execute(THREAD, DRAFT, account=ACCOUNT["email"])
     assert validated["status"] == "failed"
     assert validated["errors"][0]["code"] == code
@@ -91,7 +91,7 @@ def test_invalid_envelope_or_content_is_blocked_inside_execute(draft, code):
 
 def test_empty_subject_requires_explicit_exact_attestation_policy():
     with patch("superhuman_mail.send.lifecycle.observe", return_value=_observed(draft=_draft(subject=""))):
-        validated = send.validate(THREAD, DRAFT)
+        validated = send.validate(THREAD, DRAFT, account=ACCOUNT["email"])
         executed = send.execute(THREAD, DRAFT, account=ACCOUNT["email"])
     assert validated["errors"][0]["code"] == "SUBJECT_REQUIRED"
     assert executed["errors"][0]["code"] == "ATTESTATION_REQUIRED"
@@ -99,11 +99,14 @@ def test_empty_subject_requires_explicit_exact_attestation_policy():
 
 def test_validate_is_truthful_about_metadata_only_preflight():
     with patch("superhuman_mail.send.lifecycle.observe", return_value=_observed()):
-        result = send.validate(THREAD, DRAFT)
+        result = send.validate(THREAD, DRAFT, account=ACCOUNT["email"])
     assert result["status"] == "succeeded"
     assert result["data"]["sendable"] is True
     assert result["data"]["send_eligible"] is False
     assert result["data"]["render_attested"] is False
+    assert result["data"]["approval_authority"] == "correlation_only"
+    assert result["data"]["approval_verified"] is False
+    assert result["data"]["unattended_send_eligible"] is False
     assert result["data"]["lifecycle"]["state"] == lifecycle.ACTIVE
 
 
@@ -116,6 +119,26 @@ class _Response:
 
     def read(self):
         return b"{}"
+
+
+def test_validate_requires_explicit_account_binding():
+    result = send.validate(THREAD, DRAFT)
+    assert result["status"] == "failed"
+    assert result["errors"][0]["code"] == "ACCOUNT_REQUIRED"
+
+
+def test_execute_rejects_blank_approval_reference_before_attestation_load():
+    with patch("superhuman_mail.send._attestation.load") as load:
+        result = send.execute(
+            THREAD,
+            DRAFT,
+            account=ACCOUNT["email"],
+            attestation="fixture",
+            approval_ref="   ",
+        )
+    assert result["status"] == "failed"
+    assert result["errors"][0]["code"] == "APPROVAL_REFERENCE_REQUIRED"
+    load.assert_not_called()
 
 
 def test_execute_requires_exact_attestation_before_transport():

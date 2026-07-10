@@ -1,8 +1,9 @@
 """Exact render attestation, signing, and stale-check tests."""
 from __future__ import annotations
 
-import base64
 import copy
+import json
+import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -115,8 +116,8 @@ class FakeRenderer:
 
 @pytest.fixture(autouse=True)
 def _key_and_version(monkeypatch, tmp_path):
-    monkeypatch.setenv("SHM_ATTESTATION_KEY", base64.urlsafe_b64encode(b"k" * 32).decode())
-    monkeypatch.setenv("SHM_RENDERER_ALLOW_VERSIONS", VERSION)
+    monkeypatch.setattr(attestation, "_attestation_key", lambda *, create: b"k" * 32)
+    monkeypatch.setattr(attestation, "DEFAULT_ALLOWED_RENDERER_BUILDS", {("1041.0.15", VERSION)})
     monkeypatch.setenv("SHM_STATE_DIR", str(tmp_path / "state"))
 
 
@@ -133,9 +134,44 @@ def _create(tmp_path, renderer=None):
             )
 
 
+def test_bundled_renderer_declares_versioned_payload_contract():
+    script = Path(attestation.__file__).with_name("renderer_probe.js")
+    completed = subprocess.run(
+        ["node", str(script), "--print-contract"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    contract = json.loads(completed.stdout)
+    assert contract["adapter_version"] == attestation.ADAPTER_VERSION
+    assert contract["mutates_mail_state"] is False
+    assert contract["reminder"] == "persisted_draft_only_current_build"
+    assert "html_body" in contract["outgoing_fields"]
+    assert "reminder" not in contract["outgoing_fields"]
+
+
+def test_probe_network_policy_fails_closed_on_unknown_non_idempotent_requests():
+    events = [
+        {"method": "GET", "url": "https://mail.superhuman.com/image.png"},
+        {"method": "POST", "url": "https://mail.superhuman.com/~backend/v3/userdata.read"},
+        {"method": "POST", "url": "https://mail.superhuman.com/~backend/v3/newMutation.unknown"},
+        {"method": "DELETE", "url": "https://example.test/anything"},
+    ]
+    assert attestation._network_writes(events) == [
+        {"method": "POST", "url": "https://mail.superhuman.com/~backend/v3/newmutation.unknown"},
+        {"method": "DELETE", "url": "https://example.test/anything"},
+    ]
+
+
+def test_renderer_rejects_non_loopback_cdp_endpoint(tmp_path):
+    renderer = attestation.CdpRenderer(cdp_url="https://attacker.example.test:9222")
+    with pytest.raises(attestation.AttestationError) as caught:
+        renderer.probe({}, output_dir=tmp_path)
+    assert caught.value.code == "RENDERER_ENDPOINT_UNSAFE"
+
+
 def test_production_allowlist_binds_app_and_web_versions(monkeypatch):
-    monkeypatch.delenv("SHM_RENDERER_ALLOW_VERSIONS", raising=False)
-    monkeypatch.delenv("SHM_RENDERER_ALLOW_BUILDS", raising=False)
+    monkeypatch.setattr(attestation, "DEFAULT_ALLOWED_RENDERER_BUILDS", {("1041.0.15", "2026-07-09T19:06:39Z")})
     assert attestation._renderer_build_allowed("1041.0.15", "2026-07-09T19:06:39Z") is True
     assert attestation._renderer_build_allowed("1042.0.0", "2026-07-09T19:06:39Z") is False
 
@@ -201,6 +237,12 @@ def test_safe_show_reports_valid_but_expired_as_unusable(tmp_path):
     assert summary["usable"] is False
 
 
+def test_malformed_attestation_returns_typed_invalid_error():
+    with pytest.raises(attestation.AttestationError) as caught:
+        attestation.verify({})
+    assert caught.value.code == "ATTESTATION_INVALID"
+
+
 def test_tampered_screenshot_is_rejected_even_when_record_signature_is_valid(tmp_path):
     record = _create(tmp_path)
     Path(record["screenshots"][0]["path"]).write_bytes(b"tampered")
@@ -247,7 +289,7 @@ def test_dirty_renderer_version_mismatch_and_write_event_fail_closed(tmp_path):
 def test_readable_attachment_bytes_are_stream_hashed():
     attached = _draft(attachments=[{
         "uuid": "attachment-fixture",
-        "source": {"type": "upload-firebase", "url": "https://example.test/file"},
+        "source": {"type": "upload-firebase", "url": "https://storage.googleapis.com/file"},
     }])
 
     class Response:
@@ -266,6 +308,18 @@ def test_readable_attachment_bytes_are_stream_hashed():
     with patch("superhuman_mail.attestation.urllib.request.urlopen", return_value=Response()):
         digests = attestation.attachment_digests(attached)
     assert digests["attachment-fixture"] == attestation.sha256(b"abcdef")
+
+
+def test_attachment_bytes_reject_non_allowlisted_source_without_request():
+    attached = _draft(attachments=[{
+        "uuid": "attachment-fixture",
+        "source": {"type": "upload-firebase", "url": "https://attacker.example.test/file"},
+    }])
+    with patch("superhuman_mail.attestation.urllib.request.urlopen") as urlopen:
+        with pytest.raises(attestation.AttestationError) as caught:
+            attestation.attachment_digests(attached)
+    assert caught.value.code == "UNATTESTABLE_ATTACHMENT"
+    urlopen.assert_not_called()
 
 
 def test_unreadable_attachment_is_not_send_eligible(tmp_path):

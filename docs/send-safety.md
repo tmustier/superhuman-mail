@@ -57,7 +57,7 @@ It rejects terminal, discarded, already pending/scheduled, contradictory, invali
 
 ### 2. Open the exact draft in a CDP-enabled Superhuman app
 
-The renderer adapter never navigates or types. The exact draft must already be visible and clean in Superhuman. On macOS, launch the app with CDP only after safely closing any existing instance:
+The renderer adapter never navigates or types. It accepts loopback-local CDP endpoints only. The exact draft must already be visible and clean in Superhuman. On macOS, launch the app with CDP only after safely closing any existing instance:
 
 ```bash
 open -a "Superhuman" --args --remote-debugging-port=9222
@@ -84,9 +84,10 @@ The adapter:
 - uses an ephemeral clone and Superhuman's live `MessageModel.getDraftHtmlBody()` path, which invokes `OutgoingMessage.fromDraft()` / `BodyContent.generateForOutgoingMessage()`;
 - reserves one `superhuman_id` for approval, second probe, POST, and reconciliation;
 - constructs the allowlisted build's exact `toJsonRequest()` envelope contract around those renderer-produced HTML bytes;
+- mirrors the current build's reminder behavior: reminder stays on the persisted, fingerprint-bound draft and is not copied into `toJsonRequest()`;
 - rejects inline signature uploads that cannot be materialized read-only;
 - captures the compose view and a network-disabled rendering of the exact outgoing HTML;
-- observes network requests and rejects prohibited send/write/upload/comment/cancel/postpone traffic;
+- observes network requests and fails closed on every non-idempotent request except an explicit read-only POST allowlist;
 - re-reads the server snapshot and history after rendering;
 - signs an expiring canonical artifact with a Keychain-held HMAC key.
 
@@ -131,21 +132,34 @@ Immediately before POST, `shm`:
 
 There is no unattested fallback for customer mail.
 
+## Approval authority boundary
+
+`--approval-ref` is audit correlation only. Core `shm` does not verify that the reference was issued by a human or an independent authority, and its result says:
+
+```text
+approval_authority: correlation_only
+approval_verified: false
+unattended_send_eligible: false
+```
+
+Therefore unattended automation must hard-disable `--confirm`. An operator may invoke a send only after the full message has been explicitly approved and through the external 60-second `send-gate`. A future unattended path requires a signed, single-use capability from an issuer whose signing key is unavailable to the worker; same-process CLI arguments, environment variables, or same-UID files are not an approval trust boundary. `shm attestation show` verifies render integrity, not human approval.
+
 ## Result and exit contract
 
 Send/status data includes:
 
 ```text
-state, accepted, sent, provider_confirmed, outbound_evidence
+state, post_claimed, accepted, sent, provider_confirmed, outbound_evidence
 attempt_id, attestation_id, superhuman_id, provider_message_id
+approval_authority, approval_verified, unattended_send_eligible
 idempotency_scope, lifecycle
 ```
 
 Exit codes:
 
 - `0`: immutable provider-confirmed send, or an explicitly scheduled job;
-- `1`: rejected, tampered/stale attestation, terminal failure, or lifecycle inconsistency;
-- `4`: accepted/pending/unknown/backend-only after the requested wait.
+- `1`: rejected, tampered/stale attestation, or definitely terminal failure;
+- `4`: pending/unknown/backend-only or inconsistent possible-send evidence after the requested wait.
 
 Follow-up/CRM automation must consume only `provider_confirmed: true` / `state: sent_provider_confirmed`.
 
@@ -161,6 +175,8 @@ idempotency_scope: local_cooperating_processes
 
 Global exactly-once requires a vendor idempotency key or compare-and-set send contract.
 
+`post_claimed` means the local exactly-once journal irrevocably claimed its single POST slot. `accepted` means HTTP 2xx or later backend/provider lifecycle evidence proves the server accepted the request; a pre-connect/network exception can therefore be `post_claimed: true, accepted: false`.
+
 After a network timeout, reset, or HTTP conflict, `shm` reconciles the same attempt. It never automatically posts again after the pre-network claim. An unresolved outcome remains `unknown`/pending and exits 4.
 
 ## Private state and test controls
@@ -172,8 +188,5 @@ These environment variables exist for controlled rollout/testing:
 - `SHM_STATE_DIR`
 - `SHM_RENDERER_CDP_URL`
 - `SHM_RENDERER_WINDOW_ID`
-- `SHM_RENDERER_ALLOW_BUILDS` (`APP_VERSION@WEB_VERSION`; production rollout override)
-- `SHM_RENDERER_ALLOW_VERSIONS` (web-only fixture/testing override)
-- `SHM_ATTESTATION_KEY` (tests only; do not use as a production secret path)
 
 A new Superhuman code version fails closed until its renderer contract and non-sending E2E are reviewed.

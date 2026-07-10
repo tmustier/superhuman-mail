@@ -333,7 +333,9 @@ SCHEMA: dict[str, dict[str, Any]] = {
             "--confirm": {"required": False, "type": "flag", "hint": "Strict exact-attested send"},
             "--account": {"required": False, "type": "string"},
             "--attestation": {"required": False, "type": "string", "hint": "Required with --confirm"},
-            "--approval-ref": {"required": False, "type": "string", "hint": "Opaque approval reference; required with --confirm"},
+            "--approval-ref": {"required": False, "type": "string", "hint": "Audit correlation only (not authority); required with --confirm"},
+            "--cdp-url": {"required": False, "type": "string", "default": "http://127.0.0.1:9222"},
+            "--window-id": {"required": False, "type": "int"},
             "--delay": {"required": False, "type": "int", "default": 20},
             "--wait": {"required": False, "type": "float", "default": 120},
         },
@@ -712,7 +714,9 @@ def _build_parser() -> _ShmParser:
     send_g.add_argument("--confirm", action="store_true", help="Strict exact-attested send (irreversible)")
     send_p.add_argument("--account")
     send_p.add_argument("--attestation")
-    send_p.add_argument("--approval-ref")
+    send_p.add_argument("--approval-ref", help="Audit correlation only; does not grant send authority")
+    send_p.add_argument("--cdp-url", default="http://127.0.0.1:9222")
+    send_p.add_argument("--window-id", type=int)
     send_p.add_argument("--delay", type=int, default=20)
     send_p.add_argument("--wait", type=float, default=120)
 
@@ -752,6 +756,7 @@ def _typed_send_exit(data: dict[str, Any]) -> int:
         "send_requested",
         "send_pending_undo",
         "sent_backend_confirmed",
+        "inconsistent",
         "unknown",
     }:
         return 4
@@ -907,6 +912,7 @@ def main(argv: list[str] | None = None) -> int:
                 attestation=args.attestation,
                 approval_ref=args.approval_ref,
                 wait=args.wait,
+                renderer=_attestation.CdpRenderer(cdp_url=args.cdp_url, window_id=args.window_id),
             )
             if result["status"] == "succeeded":
                 return emit(result, exit_code=_typed_send_exit(result["data"]))

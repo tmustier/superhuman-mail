@@ -148,7 +148,8 @@ def _build_outgoing(draft: dict[str, Any], sid: str | None = None) -> dict[str, 
     for key, val in {
         "scheduled_for": draft.get("scheduledFor"),
         "abort_on_reply": draft.get("abortOnReply"),
-        "reminder": draft.get("reminder"),
+        # Current Superhuman OutgoingMessage.fromDraft() does not copy the
+        # draft reminder into toJsonRequest(); the persisted draft owns it.
         "sensitivity_label_id": draft.get("sensitivityLabelId"),
         "sensitivity_tenant_id": draft.get("sensitivityTenantId"),
     }.items():
@@ -163,6 +164,7 @@ def _build_outgoing(draft: dict[str, Any], sid: str | None = None) -> dict[str, 
 # ---------------------------------------------------------------------------
 
 SEND_DELAY_SECONDS = 20
+APPROVAL_AUTHORITY = "correlation_only"
 
 
 class SendSafetyError(RuntimeError):
@@ -281,7 +283,14 @@ def _preflight(
 def validate(thread_id: str, draft_id: str, *, account: str | None = None) -> dict[str, Any]:
     """Read-only metadata preflight. Exact render attestation remains required."""
     try:
-        checked = _preflight(thread_id, draft_id, account=account)
+        if not account:
+            raise SendSafetyError("ACCOUNT_REQUIRED", "--account is required for send preflight", cls="input")
+        checked = _preflight(
+            thread_id,
+            draft_id,
+            account=account,
+            require_explicit_account=True,
+        )
         draft = checked["draft"]
         outgoing = checked["outgoing"]
         result: dict[str, Any] = {
@@ -299,7 +308,10 @@ def validate(thread_id: str, draft_id: str, *, account: str | None = None) -> di
             "body_preview": (draft.get("snippet") or "")[:200],
             "has_attachments": bool(outgoing.get("attachments")),
             "lifecycle": checked["lifecycle"],
-            "next_step": "Create an exact render attestation before --confirm",
+            "approval_authority": APPROVAL_AUTHORITY,
+            "approval_verified": False,
+            "unattended_send_eligible": False,
+            "next_step": "Create an exact render attestation and obtain external operator approval before --confirm",
         }
         for draft_key, result_key in {
             "scheduledFor": "scheduled_for",
@@ -336,10 +348,25 @@ def _post_exact_payload(outgoing: dict[str, Any], *, delay: int) -> None:
         resp.read()
 
 
-def _attempt_result(attempt: dict[str, Any], state: dict[str, Any], *, accepted: bool) -> dict[str, Any]:
+def _request_accepted(attempt: dict[str, Any], state: dict[str, Any]) -> bool:
+    return bool(
+        attempt.get("response_class") == "http_2xx"
+        or state["state"] in {
+            lifecycle.SCHEDULED,
+            lifecycle.BACKEND_CONFIRMED,
+            lifecycle.PROVIDER_CONFIRMED,
+            lifecycle.FAILED,
+            lifecycle.ABORTED,
+        }
+    )
+
+
+def _attempt_result(attempt: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
     provider_confirmed = state["state"] == lifecycle.PROVIDER_CONFIRMED
+    post_claimed = int(attempt["post_count"]) > 0
+    accepted = _request_accepted(attempt, state)
     material_state = state["state"]
-    if accepted and material_state == lifecycle.ACTIVE and attempt.get("state") == "unknown":
+    if post_claimed and material_state == lifecycle.ACTIVE and attempt.get("state") == "unknown":
         material_state = "unknown"
     return {
         "attempt_id": attempt["attempt_id"],
@@ -347,12 +374,16 @@ def _attempt_result(attempt: dict[str, Any], state: dict[str, Any], *, accepted:
         "draft_id": attempt["draft_id"],
         "attestation_id": attempt["attestation_id"],
         "state": material_state,
+        "post_claimed": post_claimed,
         "accepted": accepted,
         "sent": provider_confirmed,
         "provider_confirmed": provider_confirmed,
         "outbound_evidence": bool(state["outbound_evidence"]),
         "superhuman_id": attempt["superhuman_id"],
         "provider_message_id": (state.get("provider_message") or {}).get("id"),
+        "approval_authority": APPROVAL_AUTHORITY,
+        "approval_verified": False,
+        "unattended_send_eligible": False,
         "idempotency_scope": _attempts.IDEMPOTENCY_SCOPE,
         "lifecycle": state,
     }
@@ -426,10 +457,20 @@ def _reconcile(
             last_attempt = journal.update(attempt["attempt_id"], state="unknown", **update)
             return last_attempt, state, warnings
         else:
-            # An active source after a POST claim is an unknown/lagging outcome,
-            # never permission to mint another ID or post again.
-            attempt_state = state_name if state_name != lifecycle.ACTIVE else "unknown"
-            last_attempt = journal.update(attempt["attempt_id"], state=attempt_state, **update)
+            if (
+                state_name == lifecycle.ACTIVE
+                and int(attempt["post_count"]) == 0
+                and attempt.get("state") == "prepared"
+            ):
+                # A read-tier status check must not convert a never-posted,
+                # safely claimable row into an irreversible unknown outcome.
+                last_attempt = journal.update(attempt["attempt_id"], **update)
+                return last_attempt, state, warnings
+            else:
+                # An active source after a POST claim is an unknown/lagging
+                # outcome, never permission to mint another ID or post again.
+                attempt_state = state_name if state_name != lifecycle.ACTIVE else "unknown"
+                last_attempt = journal.update(attempt["attempt_id"], state=attempt_state, **update)
 
         now = monotonic()
         if now >= deadline:
@@ -459,13 +500,18 @@ def status(
         journal = journal or _attempts.AttemptJournal()
         attempt = journal.get(identity["provider_user_id"], draft_id)
         if attempt:
+            if attempt["thread_id"] != thread_id:
+                raise SendSafetyError(
+                    "ATTEMPT_THREAD_MISMATCH",
+                    "The local attempt for this draft belongs to a different thread",
+                )
             updated, state, observed_warnings = _reconcile(
                 attempt,
                 account=identity["email"],
                 wait=wait,
                 journal=journal,
             )
-            return ok("send.status", _attempt_result(updated, state, accepted=int(updated["post_count"]) > 0), warnings=warnings + observed_warnings)
+            return ok("send.status", _attempt_result(updated, state), warnings=warnings + observed_warnings)
         deadline = time.monotonic() + max(0.0, wait)
         interval = 0.25
         observed_warnings: list[str] = []
@@ -499,6 +545,7 @@ def status(
             "thread_id": thread_id,
             "draft_id": draft_id,
             "state": state["state"],
+            "post_claimed": False,
             "accepted": state["state"] in {
                 lifecycle.SCHEDULED,
                 lifecycle.REQUESTED,
@@ -513,9 +560,14 @@ def status(
             "outbound_evidence": state["outbound_evidence"],
             "superhuman_id": (state.get("send_job") or {}).get("superhuman_id"),
             "provider_message_id": (state.get("provider_message") or {}).get("id"),
+            "approval_authority": APPROVAL_AUTHORITY,
+            "approval_verified": False,
+            "unattended_send_eligible": False,
             "idempotency_scope": _attempts.IDEMPOTENCY_SCOPE,
             "lifecycle": state,
         }, warnings=warnings + observed_warnings)
+    except SendSafetyError as exc:
+        return _safety_failure("send.status", exc)
     except Exception as exc:
         return fail("send.status", [classify_exception(exc)])
 
@@ -552,8 +604,10 @@ def execute(
                 allow_empty_subject=True,
             )
             raise SendSafetyError("ATTESTATION_REQUIRED", "--attestation is required for strict send", cls="input")
-        if not approval_ref:
+        if not approval_ref or not approval_ref.strip():
             raise SendSafetyError("APPROVAL_REFERENCE_REQUIRED", "--approval-ref is required for strict send", cls="input")
+        if len(approval_ref) > 512:
+            raise SendSafetyError("APPROVAL_REFERENCE_INVALID", "--approval-ref must be 512 characters or fewer", cls="input")
         if delay < 0:
             raise SendSafetyError("INVALID_DELAY", "--delay must be non-negative", cls="input")
 
@@ -589,12 +643,15 @@ def execute(
                 wait=wait,
                 journal=journal,
             )
-            data = _attempt_result(updated, state, accepted=True)
+            data = _attempt_result(updated, state)
             if state["state"] in {lifecycle.FAILED, lifecycle.ABORTED, lifecycle.INCONSISTENT}:
                 code = "SEND_TERMINAL_FAILURE" if state["state"] != lifecycle.INCONSISTENT else "LIFECYCLE_INCONSISTENT"
                 return fail("send", [error("conflict", code, False, f"Attempt reconciled to {state['state']}")], warnings=warnings)
             if not data["sent"] and state["state"] != lifecycle.SCHEDULED:
-                warnings.append("Attempt remains pending/unknown; no additional POST was made")
+                if data["post_claimed"]:
+                    warnings.append("Attempt remains pending/unknown; no additional POST was made")
+                else:
+                    warnings.append("No local POST was claimed; lifecycle evidence is not provider-confirmed")
             return ok("send", data, warnings=account_warnings + warnings)
 
         if attempt is None:
@@ -628,7 +685,15 @@ def execute(
                 superhuman_id=str(record["superhuman_id"]),
                 outgoing_fingerprint=str(record["fingerprint"]["exact"]),
             )
-        attempt, claimed = journal.claim_post(attempt["attempt_id"])
+        try:
+            attempt, claimed = journal.claim_post(attempt["attempt_id"])
+        except KeyError as exc:
+            replacement = journal.get(identity["provider_user_id"], draft_id)
+            if replacement is not None:
+                raise _attempts.AttemptConflict(
+                    "Attempt identity changed concurrently; inspect send status before retrying"
+                ) from exc
+            raise
         if not claimed:
             updated, state, warnings = _reconcile(
                 attempt,
@@ -636,7 +701,7 @@ def execute(
                 wait=wait,
                 journal=journal,
             )
-            return ok("send", _attempt_result(updated, state, accepted=int(updated["post_count"]) > 0), warnings=account_warnings + warnings)
+            return ok("send", _attempt_result(updated, state), warnings=account_warnings + warnings)
 
         try:
             _post_exact_payload(verified["outgoing_payload"], delay=delay)
@@ -658,12 +723,15 @@ def execute(
             wait=wait,
             journal=journal,
         )
-        data = _attempt_result(updated, state, accepted=True)
+        data = _attempt_result(updated, state)
         if state["state"] in {lifecycle.FAILED, lifecycle.ABORTED, lifecycle.INCONSISTENT}:
             code = "SEND_TERMINAL_FAILURE" if state["state"] != lifecycle.INCONSISTENT else "LIFECYCLE_INCONSISTENT"
             return fail("send", [error("conflict", code, False, f"Attempt reconciled to {state['state']}")], warnings=warnings)
         if not data["sent"] and state["state"] != lifecycle.SCHEDULED:
-            warnings.append("Request was accepted or outcome is unknown; provider delivery is not yet confirmed")
+            if data["accepted"]:
+                warnings.append("Request was accepted; provider delivery is not yet confirmed")
+            else:
+                warnings.append("A POST was claimed, but server acceptance is unknown; no retry was attempted")
         return ok("send", data, warnings=account_warnings + warnings)
     except SendSafetyError as exc:
         return _safety_failure("send", exc)

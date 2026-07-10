@@ -6,7 +6,7 @@ import threading
 import urllib.error
 from unittest.mock import patch
 
-from superhuman_mail import lifecycle, send
+from superhuman_mail import attestation, lifecycle, send
 from superhuman_mail.attempts import AttemptJournal
 
 THREAD = "thread_fixture"
@@ -78,6 +78,35 @@ def _run(journal, state, *, post_side_effect=None, wait=0):
     return result, post
 
 
+def test_transport_posts_canonical_fresh_payload_bytes_only():
+    captured = {}
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return b"{}"
+
+    def urlopen(request, timeout):
+        captured["request"] = request
+        captured["timeout"] = timeout
+        return Response()
+
+    payload = {"html_body": "<p>exact</p>", "superhuman_id": SID, "headers": []}
+    with patch("superhuman_mail.send._auth.api_headers", return_value={"Authorization": "fixture"}):
+        with patch("superhuman_mail.send.urllib.request.urlopen", side_effect=urlopen):
+            send._post_exact_payload(payload, delay=20)
+    request = captured["request"]
+    expected = {"version": 3, "outgoing_message": payload, "delay": 20, "is_multi_recipient": True}
+    assert request.method == "POST"
+    assert request.data == attestation.canonical_bytes(expected)
+    assert captured["timeout"] == 30
+
+
 def test_stale_second_probe_never_creates_or_strands_attempt(tmp_path):
     from superhuman_mail.attestation import AttestationError
 
@@ -109,12 +138,15 @@ def test_stale_second_probe_never_creates_or_strands_attempt(tmp_path):
 def test_http_acceptance_during_undo_window_is_pending_not_sent(tmp_path):
     journal = AttemptJournal(tmp_path / "attempts.sqlite3")
     result, post = _run(journal, _state(lifecycle.PENDING_UNDO))
-    assert post.call_count == 1
+    post.assert_called_once_with({"fixture": True}, delay=20)
     assert result["status"] == "succeeded"
     assert result["data"]["state"] == lifecycle.PENDING_UNDO
     assert result["data"]["accepted"] is True
     assert result["data"]["sent"] is False
     assert result["data"]["provider_confirmed"] is False
+    assert result["data"]["approval_authority"] == "correlation_only"
+    assert result["data"]["approval_verified"] is False
+    assert result["data"]["unattended_send_eligible"] is False
     assert result["data"]["idempotency_scope"] == "local_cooperating_processes"
 
 
@@ -198,6 +230,7 @@ def test_lost_http_response_reconciles_provider_and_never_reposts(tmp_path):
     assert post.call_count == 1
     assert result["status"] == "succeeded"
     assert result["data"]["sent"] is True
+    assert result["data"]["accepted"] is True
     stored = journal.get(ACCOUNT["provider_user_id"], DRAFT)
     assert stored["post_count"] == 1
     assert stored["response_class"] == "UNREACHABLE"
@@ -210,10 +243,92 @@ def test_unknown_outcome_remains_non_sent_and_cannot_claim_again(tmp_path):
     assert result["status"] == "succeeded"
     assert result["data"]["sent"] is False
     assert result["data"]["state"] == "unknown"
+    assert result["data"]["post_claimed"] is True
+    assert result["data"]["accepted"] is False
     stored = journal.get(ACCOUNT["provider_user_id"], DRAFT)
     assert stored["state"] == "unknown"
     _row, claimed = journal.claim_post(stored["attempt_id"])
     assert claimed is False
+
+
+def test_status_does_not_brick_never_posted_prepared_attempt(tmp_path):
+    journal = AttemptJournal(tmp_path / "attempts.sqlite3")
+    prepared, _created = journal.create_or_get(
+        account_id=ACCOUNT["provider_user_id"],
+        account_hash="account-hash",
+        thread_id=THREAD,
+        draft_id=DRAFT,
+        attestation_id="attestation_fixture",
+        approval_ref="approval_fixture",
+        superhuman_id=SID,
+        outgoing_fingerprint="sha256:approved",
+    )
+    with patch("superhuman_mail.send.lifecycle.resolve_account", return_value=(ACCOUNT, [])):
+        with patch("superhuman_mail.send.lifecycle.observe", return_value=_observe(_state(lifecycle.ACTIVE))):
+            status = send.status(THREAD, DRAFT, account=ACCOUNT["email"], wait=120, journal=journal)
+    stored = journal.get_by_id(prepared["attempt_id"])
+    assert status["data"]["accepted"] is False
+    assert status["data"]["post_claimed"] is False
+    assert stored["state"] == "prepared"
+    assert stored["post_count"] == 0
+
+    result, post = _run(
+        journal,
+        _state(lifecycle.PROVIDER_CONFIRMED, provider_id="message_fixture"),
+    )
+    post.assert_called_once_with({"fixture": True}, delay=20)
+    assert result["data"]["sent"] is True
+
+
+def test_concurrent_prepared_rotation_surfaces_attempt_conflict_not_key_error(tmp_path):
+    journal = AttemptJournal(tmp_path / "attempts.sqlite3")
+    journal.create_or_get(
+        account_id=ACCOUNT["provider_user_id"],
+        account_hash="account-hash",
+        thread_id=THREAD,
+        draft_id=DRAFT,
+        attestation_id="attestation_fixture",
+        approval_ref="approval_fixture",
+        superhuman_id=SID,
+        outgoing_fingerprint="sha256:approved",
+    )
+    with patch("superhuman_mail.send._attestation.load", return_value=_record()):
+        with patch("superhuman_mail.send._attestation.verify"):
+            with patch("superhuman_mail.send._attestation.revalidate_for_send", return_value={"outgoing_payload": {"fixture": True}}):
+                with patch("superhuman_mail.send.lifecycle.resolve_account", return_value=(ACCOUNT, [])):
+                    with patch.object(journal, "claim_post", side_effect=KeyError("rotated")):
+                        with patch("superhuman_mail.send._post_exact_payload") as post:
+                            result = send.execute(
+                                THREAD,
+                                DRAFT,
+                                account=ACCOUNT["email"],
+                                attestation="attestation_fixture",
+                                approval_ref="approval_fixture",
+                                journal=journal,
+                            )
+    assert result["status"] == "failed"
+    assert result["errors"][0]["code"] == "ATTEMPT_CONFLICT"
+    post.assert_not_called()
+
+
+def test_status_rejects_thread_mismatch_for_existing_attempt(tmp_path):
+    journal = AttemptJournal(tmp_path / "attempts.sqlite3")
+    journal.create_or_get(
+        account_id=ACCOUNT["provider_user_id"],
+        account_hash="account-hash",
+        thread_id=THREAD,
+        draft_id=DRAFT,
+        attestation_id="attestation_fixture",
+        approval_ref="approval_fixture",
+        superhuman_id=SID,
+        outgoing_fingerprint="sha256:approved",
+    )
+    with patch("superhuman_mail.send.lifecycle.resolve_account", return_value=(ACCOUNT, [])):
+        with patch("superhuman_mail.send.lifecycle.observe") as observe:
+            result = send.status("wrong-thread", DRAFT, account=ACCOUNT["email"], journal=journal)
+    assert result["status"] == "failed"
+    assert result["errors"][0]["code"] == "ATTEMPT_THREAD_MISMATCH"
+    observe.assert_not_called()
 
 
 def test_status_without_local_attempt_waits_for_native_job_provider_confirmation(tmp_path):

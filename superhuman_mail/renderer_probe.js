@@ -17,6 +17,22 @@ function arg(name, fallback) {
   return index >= 0 && process.argv[index + 1] ? process.argv[index + 1] : fallback;
 }
 
+const RENDERER_CONTRACT = {
+  adapter_version: "superhuman-cdp-v1",
+  outgoing_fields: [
+    "headers", "superhuman_id", "rfc822_id", "thread_id", "message_id",
+    "in_reply_to", "from", "to", "cc", "bcc", "subject", "html_body",
+    "attachments", "scheduled_for", "abort_on_reply", "current_message_ids",
+    "mail_merge_recipients", "sensitivity_label_id", "sensitivity_tenant_id",
+  ],
+  reminder: "persisted_draft_only_current_build",
+  mutates_mail_state: false,
+};
+if (process.argv.includes("--print-contract")) {
+  process.stdout.write(JSON.stringify(RENDERER_CONTRACT));
+  process.exit(0);
+}
+
 const cdpBase = arg("--cdp", "http://127.0.0.1:9222").replace(/\/$/, "");
 const outputDir = path.resolve(arg("--output", process.cwd()));
 const input = JSON.parse(fs.readFileSync(0, "utf8"));
@@ -251,6 +267,9 @@ function expressionFor(request) {
     abort_on_reply: renderDraft.abortOnReply || false,
     current_message_ids: thread && thread.messageIds,
     mail_merge_recipients: attributes.mailMergeRecipients || [],
+    // The allowlisted OutgoingMessage.fromDraft() does not copy reminder into
+    // its attributes; toJsonRequest() therefore omits it. The persisted draft
+    // remains fingerprint-bound so reminder drift still fails the second probe.
     sensitivity_label_id: attributes.sensitivityLabelId,
     sensitivity_tenant_id: attributes.sensitivityTenantId,
   }));

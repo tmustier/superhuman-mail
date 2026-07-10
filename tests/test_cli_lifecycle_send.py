@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 from superhuman_mail.cli import main
 from superhuman_mail._envelope import ok
@@ -31,11 +31,18 @@ def test_send_status_subcommand_spelling_maps_to_read_only_status(capsys):
 
 
 def test_active_or_terminal_failure_status_exits_one(capsys):
-    for state in ("active_draft", "send_failed", "send_aborted", "discarded", "inconsistent"):
+    for state in ("active_draft", "send_failed", "send_aborted", "discarded"):
         with patch("superhuman_mail.cli._send.status", return_value=ok("send.status", _send_data(state))):
             code = main(["send", "status", THREAD, DRAFT, "--account", ACCOUNT])
         assert code == 1
         capsys.readouterr()
+
+
+def test_inconsistent_possible_send_status_exits_four(capsys):
+    with patch("superhuman_mail.cli._send.status", return_value=ok("send.status", _send_data("inconsistent"))):
+        code = main(["send", "status", THREAD, DRAFT, "--account", ACCOUNT])
+    assert code == 4
+    capsys.readouterr()
 
 
 def test_scheduled_status_exits_zero_without_sent_claim(capsys):
@@ -62,6 +69,8 @@ def test_confirm_passes_attestation_approval_and_wait_and_pending_exits_four(cap
             "--approval-ref", "approval_fixture",
             "--delay", "20",
             "--wait", "30",
+            "--cdp-url", "http://127.0.0.1:9333",
+            "--window-id", "123",
         ])
     assert code == 4
     execute.assert_called_once_with(
@@ -72,7 +81,11 @@ def test_confirm_passes_attestation_approval_and_wait_and_pending_exits_four(cap
         attestation="attestation_fixture",
         approval_ref="approval_fixture",
         wait=30.0,
+        renderer=ANY,
     )
+    renderer = execute.call_args.kwargs["renderer"]
+    assert renderer.cdp_url == "http://127.0.0.1:9333"
+    assert renderer.window_id == 123
     assert json.loads(capsys.readouterr().out)["data"]["sent"] is False
 
 

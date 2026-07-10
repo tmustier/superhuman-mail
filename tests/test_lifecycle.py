@@ -14,7 +14,7 @@ SID = "sid.fixture"
 MESSAGE = "message_fixture"
 
 
-def _userdata(*, draft=None, job=None, discarded=None, extra_messages=None):
+def _userdata(*, draft=None, job=None, discarded=None, sending=False, extra_messages=None):
     wrapper = {"draft": draft or {
         "id": DRAFT,
         "threadId": THREAD,
@@ -28,6 +28,8 @@ def _userdata(*, draft=None, job=None, discarded=None, extra_messages=None):
         wrapper["sendJob"] = job
     if discarded is not None:
         wrapper["discardedAt"] = discarded
+    if sending:
+        wrapper["sending"] = True
     messages = {DRAFT: wrapper}
     messages.update(extra_messages or {})
     return {"historyId": 42, "messages": messages}
@@ -46,12 +48,12 @@ def _provider(**overrides):
     return value
 
 
-def _classify(*, draft=None, job=None, discarded=None, providers=(), attempt_sid=None):
+def _classify(*, draft=None, job=None, discarded=None, sending=False, providers=(), attempt_sid=None):
     return lifecycle.classify(
         account=ACCOUNT,
         thread_id=THREAD,
         draft_id=DRAFT,
-        userdata=_userdata(draft=draft, job=job, discarded=discarded),
+        userdata=_userdata(draft=draft, job=job, discarded=discarded, sending=sending),
         provider_messages=providers,
         observed_at="2026-07-10T12:01:00Z",
         attempt_superhuman_id=attempt_sid,
@@ -63,6 +65,13 @@ def test_plain_active_draft_is_not_outbound_evidence():
     assert result["state"] == lifecycle.ACTIVE
     assert result["terminal"] is False
     assert result["outbound_evidence"] is False
+
+
+def test_wrapper_sending_flag_blocks_before_send_job_materializes():
+    result = _classify(sending=True)
+    assert result["state"] == lifecycle.REQUESTED
+    assert result["send_blocked"] is True
+    assert result["send_job"]["sending"] is True
 
 
 def test_newer_draft_does_not_match_unrelated_sent_message_in_same_thread():
@@ -237,6 +246,19 @@ def test_provider_confirmation_wins_material_outcome_but_surfaces_stale_failure(
     assert result["state"] == lifecycle.PROVIDER_CONFIRMED
     assert result["consistency"] == "conflicting"
     assert result["outbound_evidence"] is True
+
+
+def test_duplicate_provider_linkage_conflict_is_order_independent():
+    clean = _provider(id="message_clean")
+    conflicting = _provider(id="message_conflict", superhumanId="sid.other")
+    for providers in ([clean, conflicting], [conflicting, clean]):
+        result = _classify(
+            job={"superhumanId": SID},
+            providers=providers,
+            attempt_sid=SID,
+        )
+        assert result["state"] == lifecycle.PROVIDER_CONFIRMED
+        assert result["consistency"] == "conflicting"
 
 
 def test_draft_id_and_draft_label_never_set_outbound_evidence():

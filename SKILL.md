@@ -60,7 +60,7 @@ Use this workflow every time:
 7. pass the opaque approval reference and attestation through the configured outbound send gate/grace period
 8. let the gate invoke `shm send --confirm ...`; then wait for `sent_provider_confirmed`
 
-Never treat draft timestamps, labels, HTTP acceptance, `sent_backend_confirmed`, or exit `4` as a completed send. Never create CRM/follow-up work until `provider_confirmed: true`.
+Never treat draft timestamps, labels, HTTP acceptance, `sent_backend_confirmed`, or exit `4` as a completed send. Never create CRM/follow-up work until `provider_confirmed: true`. `--approval-ref` is audit correlation, not technical authority; unattended agents must not invoke `--confirm` (`unattended_send_eligible: false`).
 
 ## Command surface
 

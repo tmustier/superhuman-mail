@@ -146,6 +146,7 @@ def _provider_proof(
     job_message_id = str(_field(send_job, "messageId", "message_id") or "")
     expected_sid = str(_field(send_job, "superhumanId", "superhuman_id") or attempt_superhuman_id or "")
     conflict = False
+    candidate: dict[str, Any] | None = None
 
     for message in messages:
         if "SENT" not in _labels(message) or _sender_email(message) != account_email.lower():
@@ -162,18 +163,20 @@ def _provider_proof(
             if linked_sid is not None and expected_sid and linked_sid != expected_sid:
                 conflict = True
                 continue
-            return message, conflict
+            candidate = candidate or message
+            continue
 
         # Proof B: userdata may lag, but both source-draft and attempt identities link.
         if linked_draft == draft_id and expected_sid and linked_sid == expected_sid:
-            return message, conflict
+            candidate = candidate or message
+            continue
 
         # A message that claims either identity but disagrees on the other is evidence
         # of contradictory linkage, not a fuzzy match.
         if linked_draft == draft_id or (expected_sid and linked_sid == expected_sid) or (job_message_id and mid == job_message_id):
             conflict = True
 
-    return None, conflict
+    return candidate, conflict
 
 
 def _has_failure(job: dict[str, Any]) -> bool:
@@ -271,6 +274,12 @@ def classify(
             state = REQUESTED
         confidence = "backend_nonterminal"
         outbound = False
+    elif wrapper.get("sending"):
+        # Superhuman sets this optimistic wrapper flag before sendJob is fully
+        # materialized. Treat it as blocking native-send evidence.
+        state = REQUESTED
+        confidence = "userdata_optimistic"
+        outbound = False
     elif wrapper.get("discardedAt") or draft.get("discardedAt"):
         state = DISCARDED
         confidence = "userdata"
@@ -316,6 +325,7 @@ def classify(
             "superhuman_id": _field(job, "superhumanId", "superhuman_id"),
             "not_sent_to_server": bool(_field(job, "notSentToServer", "not_sent_to_server")),
             "present": bool(job),
+            "sending": bool(wrapper.get("sending")),
         },
         "provider_message": provider_data,
         "observations": [
