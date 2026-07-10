@@ -27,9 +27,20 @@ def read(thread_id: str, account: str | None = None) -> dict[str, Any]:
     return messages(thread_id, account)
 
 
-def userdata(thread_id: str) -> dict[str, Any]:
+def _bind_api_account(account: str | None) -> str:
+    """Bind a userdata request to the one configured private-API identity."""
+    configured = _config.api("email")
+    if account is not None and account.strip().lower() != configured.lower():
+        raise ValueError(
+            f"Account {account} is not bound to configured API identity {configured}"
+        )
+    return configured
+
+
+def userdata(thread_id: str, account: str | None = None) -> dict[str, Any]:
     """Read thread userdata (drafts, comments, metadata) from the API."""
     try:
+        _bind_api_account(account)
         payload = {
             "reads": [{"path": f"users/{_config.api('google_id')}/threads/{thread_id}"}],
             "pageSize": 100,
@@ -49,8 +60,9 @@ def userdata(thread_id: str) -> dict[str, Any]:
         return fail("thread.userdata", [classify_exception(e)])
 
 
-def userdata_raw(thread_id: str) -> dict[str, Any] | None:
+def userdata_raw(thread_id: str, account: str | None = None) -> dict[str, Any] | None:
     """Read thread userdata and return the raw value (no envelope). Used internally."""
+    _bind_api_account(account)
     payload = {
         "reads": [{"path": f"users/{_config.api('google_id')}/threads/{thread_id}"}],
         "pageSize": 100,
@@ -67,9 +79,9 @@ def userdata_raw(thread_id: str) -> dict[str, Any] | None:
     return results[0].get("value") if results else None
 
 
-def current_history_id(thread_id: str) -> int | None:
+def current_history_id(thread_id: str, account: str | None = None) -> int | None:
     """Get the current history ID for a thread (used for optimistic writes)."""
-    ud = userdata_raw(thread_id)
+    ud = userdata_raw(thread_id, account=account)
     if not ud:
         return None
     hid = ud.get("historyId")

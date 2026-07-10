@@ -85,10 +85,10 @@ class TestBuildOutgoing:
         out = _build_outgoing(draft)
         assert out["scheduled_for"] == "2026-04-01T09:00:00Z"
 
-    def test_reminder_propagates(self):
+    def test_reminder_stays_on_persisted_draft_not_current_send_request(self):
         draft = self._minimal_draft(reminder="2026-04-03T09:00:00Z")
         out = _build_outgoing(draft)
-        assert out["reminder"] == "2026-04-03T09:00:00Z"
+        assert "reminder" not in out
 
     def test_sensitivity_labels_propagate(self):
         draft = self._minimal_draft(sensitivityLabelId="lbl_123", sensitivityTenantId="ten_456")

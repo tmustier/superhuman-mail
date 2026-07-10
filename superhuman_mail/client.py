@@ -14,6 +14,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from . import approval as _approval
+from . import attestation as _attestation
 from . import comment as _comment
 from . import draft as _draft
 from . import opens as _opens
@@ -33,9 +35,9 @@ class _ThreadOps:
         """Backward-compatible alias for messages()."""
         return self.messages(thread_id, account)
 
-    def userdata(self, thread_id: str) -> dict[str, Any]:
+    def userdata(self, thread_id: str, account: str | None = None) -> dict[str, Any]:
         """Read thread userdata from API."""
-        return _thread.userdata(thread_id)
+        return _thread.userdata(thread_id, account=account)
 
     def list(self, **kwargs: Any) -> dict[str, Any]:
         """List recent threads."""
@@ -77,9 +79,17 @@ class _DraftOps:
         """Create a new compose draft."""
         return _draft.create_compose(subject, body, **kwargs)
 
-    def read(self, thread_id: str, draft_id: str | None = None) -> dict[str, Any]:
-        """Read draft(s) from thread."""
-        return _draft.read(thread_id, draft_id)
+    def read(self, thread_id: str, draft_id: str | None = None, **kwargs: Any) -> dict[str, Any]:
+        """Read draft(s) with lifecycle metadata."""
+        return _draft.read(thread_id, draft_id, **kwargs)
+
+    def status(self, thread_id: str, draft_id: str | None = None, **kwargs: Any) -> dict[str, Any]:
+        """Read canonical draft/send lifecycle state."""
+        return _draft.status(thread_id, draft_id, **kwargs)
+
+    def attest_render(self, thread_id: str, draft_id: str, **kwargs: Any) -> dict[str, Any]:
+        """Create a signed exact live-Superhuman render attestation."""
+        return _attestation.create(thread_id, draft_id, **kwargs)
 
     def discard(self, thread_id: str, draft_id: str) -> dict[str, Any]:
         """Discard a draft."""
@@ -117,13 +127,25 @@ class _CommentOps:
 class _SendOps:
     """Send operations (irreversible)."""
 
-    def validate(self, thread_id: str, draft_id: str) -> dict[str, Any]:
-        """Dry-run: validate a draft is sendable."""
-        return _send.validate(thread_id, draft_id)
+    def validate(self, thread_id: str, draft_id: str, **kwargs: Any) -> dict[str, Any]:
+        """Dry-run: validate draft metadata and lifecycle."""
+        return _send.validate(thread_id, draft_id, **kwargs)
+
+    def status(self, thread_id: str, draft_id: str, **kwargs: Any) -> dict[str, Any]:
+        """Reconcile a send attempt without sending."""
+        return _send.status(thread_id, draft_id, **kwargs)
 
     def execute(self, thread_id: str, draft_id: str, **kwargs: Any) -> dict[str, Any]:
-        """Send a draft. IRREVERSIBLE."""
+        """Strict exact-attested send. IRREVERSIBLE."""
         return _send.execute(thread_id, draft_id, **kwargs)
+
+
+class _ApprovalOps:
+    """External exact-send approval verification (read-only)."""
+
+    def verify(self, reference: str, *, attestation: str, **kwargs: Any) -> dict[str, Any]:
+        """Verify authority, exact binding, expiry, and replay state."""
+        return _approval.show_safe(reference, attestation_reference=attestation, **kwargs)
 
 
 class _ShareOps:
@@ -155,4 +177,5 @@ class Client:
         self.draft = _DraftOps()
         self.comment = _CommentOps()
         self.send = _SendOps()
+        self.approval = _ApprovalOps()
         self.share = _ShareOps()

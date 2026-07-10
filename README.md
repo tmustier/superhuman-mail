@@ -11,7 +11,7 @@ This is **not** an official SDK. It talks to Superhuman's private API and local 
 - **Drafts**: create reply, reply-all, forward, and compose drafts
 - **Draft management**: read, discard, attach files, share, and unshare drafts
 - **Comments**: post, read, and discard thread comments
-- **Send**: validate and send drafts with an explicit safety gate
+- **Send safety**: typed lifecycle, exact live-render attestation, local attempt reconciliation, and provider-confirmed completion
 - **Setup / doctor**: bootstrap config from the local Superhuman app and verify auth
 
 ## Install
@@ -55,6 +55,7 @@ export SUPERHUMAN_MAIL_CONFIG=/path/to/config.json
 
 - Superhuman desktop app installed and signed in
 - Python 3.11+
+- Node.js 22+ for the CDP exact-render probe
 - `cryptography` installed in the environment running `shm`
 
 ## Config
@@ -87,7 +88,7 @@ There is no alternate text/table mode. Humans can pipe to `jq`; agents always ge
 
 | Tier | Commands | Risk |
 |---|---|---|
-| **read** | `thread messages`, `thread userdata`, `thread list`, `thread search`, `opens`, `opens --recent`, `draft read`, `comment read`, `doctor`, `schema` | None |
+| **read** | `thread messages`, `thread userdata`, `thread list`, `thread search`, `opens`, `opens --recent`, `draft read`, `draft status`, `draft attest-render`, `attestation show`, `send --dry-run`, `send status`, `comment read`, `doctor`, `schema` | No mail mutation |
 | **write** | `setup`, `draft reply`, `draft reply-all`, `draft forward`, `draft compose`, `draft discard`, `draft attach`, `draft share`, `draft unshare`, `comment post`, `comment discard` | Reversible |
 | **irreversible** | `send` | Requires `--dry-run` or `--confirm` |
 
@@ -123,7 +124,8 @@ shm draft reply <thread_id> --body "Checking in" --scheduled-for "2026-03-26T09:
 shm draft compose --subject "Hi" --body "..." --to x@example.com --reminder "2026-04-01T09:00:00Z"
 
 # Read / manage drafts
-shm draft read <thread_id>
+shm draft read <thread_id> [--active-only] [--account email]
+shm draft status <thread_id> [--draft-id id] [--account email]
 shm draft discard <thread_id> <draft_id>
 shm draft attach <thread_id> <draft_id> ./report.pdf
 shm draft share <thread_id> <draft_id>
@@ -134,9 +136,13 @@ shm comment post <thread_id> --body "Please review"
 shm comment read <thread_id>
 shm comment discard <thread_id> <comment_id>
 
-# Send (validate first, then explicitly confirm)
-shm send --dry-run <thread_id> <draft_id>
-shm send --confirm <thread_id> <draft_id>
+# Send safety: lifecycle preflight → exact render → approval gate → confirm/status
+shm send --dry-run <thread_id> <draft_id> --account owner@example.com
+shm draft attest-render <thread_id> <draft_id> --account owner@example.com --output ./private-preview [--window-id ID]
+shm attestation show <id-or-path> --account owner@example.com --thread-id <thread_id> --draft-id <draft_id>
+shm approval verify <receipt.json> --attestation <id-or-path>
+shm send --confirm <thread_id> <draft_id> --account owner@example.com --attestation <id-or-path> --approval-receipt <receipt.json> --wait 120
+shm send status <thread_id> <draft_id> --account owner@example.com --wait 120
 
 # Diagnostics
 shm setup [--email someone@example.com]
@@ -145,9 +151,17 @@ shm schema
 shm schema draft.forward
 ```
 
+### Strict send semantics
+
+`send --dry-run` is metadata/lifecycle validation only; it reports `send_eligible: false` until an exact live-Superhuman render is attested. `send --confirm` requires an externally issued Ed25519 receipt bound to that exact attestation, reruns the renderer after the external grace period, atomically consumes the single-use receipt with the local POST claim, and posts only freshly probed matching bytes. Caller-supplied `--approval-ref` never authorizes.
+
+Only `state: sent_provider_confirmed` returns `sent: true`. Accepted/pending/unknown/backend-only or inconsistent possible-send outcomes exit `4`; definitely rejected/failed outcomes exit `1`; provider-confirmed or explicitly scheduled outcomes exit `0`. The local journal prevents duplicate POSTs only among cooperating trusted-executor processes sharing one state directory—global exactly-once is not claimed. Until an external issuer public key is pinned and the transport credentials are isolated in a trusted executor, confirm fails closed with `APPROVAL_TRUST_UNAVAILABLE`.
+
+See [`docs/send-safety.md`](docs/send-safety.md) for renderer setup, lifecycle evidence, redaction, and retry rules.
+
 ### Notes
 
-- `thread userdata` is intentionally marked **advanced**. Prefer purpose-built commands like `draft read`, `comment read`, or `opens` when possible.
+- `thread userdata` is intentionally marked **advanced**. Prefer purpose-built commands like `draft read`, `draft status`, `send status`, `comment read`, or `opens` when possible.
 - `thread list` and `thread search` support `--account` for multi-account setups.
 - `thread list` and `thread search` support `--fail-empty` to exit with code `3` on zero results.
 - All draft creation commands support smart-send flags: `--scheduled-for`, `--abort-on-reply`, `--reminder`, `--sensitivity-label-id`, `--sensitivity-tenant-id`. Use `shm schema draft.reply` for details.
@@ -186,6 +200,7 @@ Error classes:
 ## Python client
 
 ```python
+from pathlib import Path
 from superhuman_mail import Client
 
 c = Client()
@@ -206,9 +221,15 @@ result = c.draft.create_reply("19d001f35612a211", body="Following up",
 result = c.draft.create_compose(subject="Hi", body="Hello", to=["someone@example.com"])
 result = c.draft.share("19d001f35612a211", "draft00abc123")
 
-# Send
-result = c.send.validate("19d001f35612a211", "draft00abc123")
-result = c.send.execute("19d001f35612a211", "draft00abc123")
+# Send (strict exact-attested execution)
+result = c.send.validate("19d001f35612a211", "draft00abc123", account="owner@example.com")
+attested = c.draft.attest_render("19d001f35612a211", "draft00abc123",
+                                 account="owner@example.com", output_dir=Path("./private-preview"))
+receipt = c.approval.verify("receipt.json", attestation=attested["attestation_id"])
+result = c.send.execute("19d001f35612a211", "draft00abc123",
+                        account="owner@example.com",
+                        attestation=attested["attestation_id"],
+                        approval_receipt="receipt.json")
 ```
 
 All methods return the same envelope dict as the CLI.
@@ -256,11 +277,16 @@ pyproject.toml
 - `docs/superhuman-api-endpoints.md` — reverse-engineered endpoint inventory
 - `docs/superhuman-read-statuses.md` — read receipts, Recent Opens, and the thread userdata model
 - `docs/official-superhuman-mcp-beta.md` — notes on the official MCP beta
-- `docs/draft-lifecycle-render-attestation.md` — RCA and proposed lifecycle/render-attestation design
+- `docs/draft-lifecycle-render-attestation.md` — RCA and lifecycle/render-attestation design
+- `docs/send-safety.md` — lifecycle evidence, exact render attestation, external approval, reconciliation, and exit contracts
+- `docs/approval-receipt-issuer-contract.md` / `approval-receipt-v1.schema.json` — trusted issuer/executor interface
 
 ## Safety
 
-- `send` is irreversible and intentionally requires `--dry-run` or `--confirm`
+- `send` is irreversible and requires exact attestation plus an externally signed, short-lived, exact-binding approval receipt
+- execute-time lifecycle validation blocks terminal source-draft residue and existing pending/scheduled jobs
+- HTTP acceptance is pending, never proof of delivery; provider-confirmed immutable identity is required for `sent: true`
+- retries reuse one local attempt identity and reconcile before any further action
 - draft/comment/share operations are reversible
 - `shm doctor` verifies config, local DB, keychain, and auth before you rely on the CLI
 

@@ -18,6 +18,8 @@ from pathlib import Path
 from typing import Any
 
 from . import _auth, _config, _local
+from . import approval as _approval
+from . import attestation as _attestation
 from . import comment as _comment
 from . import draft as _draft
 from . import opens as _opens
@@ -27,9 +29,9 @@ from . import share as _share
 from . import thread as _thread
 from ._envelope import emit, error, fail, ok
 
-__version__ = "0.2.1"
+__version__ = "0.3.0"
 
-_COMMANDS = ["thread", "opens", "draft", "comment", "send", "setup", "doctor", "schema"]
+_COMMANDS = ["thread", "opens", "draft", "comment", "send", "attestation", "approval", "setup", "doctor", "schema"]
 
 # ---------------------------------------------------------------------------
 # Schema definition (for agent introspection)
@@ -46,7 +48,10 @@ SCHEMA: dict[str, dict[str, Any]] = {
     },
     "thread.userdata": {
         "description": "Advanced: raw thread userdata dump. Prefer draft read, comment read, or opens for specific data.",
-        "args": {"thread_id": {"required": True, "type": "string"}},
+        "args": {
+            "thread_id": {"required": True, "type": "string"},
+            "--account": {"required": False, "type": "string"},
+        },
         "safety": "read",
         "examples": [
             "shm thread userdata 19d001f35612a211",
@@ -201,16 +206,42 @@ SCHEMA: dict[str, dict[str, Any]] = {
         ],
     },
     "draft.read": {
-        "description": "Read draft(s) from a thread's userdata",
+        "description": "Read source drafts with canonical lifecycle and active/terminal counts",
         "args": {
             "thread_id": {"required": True, "type": "string"},
             "--draft-id": {"required": False, "type": "string"},
+            "--account": {"required": False, "type": "string"},
+            "--active-only": {"required": False, "type": "flag"},
         },
         "safety": "read",
         "examples": [
-            "shm draft read 19d001f35612a211",
+            "shm draft read 19d001f35612a211 --active-only",
             "shm draft read 19d001f35612a211 --draft-id draft00abc123",
         ],
+    },
+    "draft.status": {
+        "description": "Read canonical per-draft lifecycle/provenance",
+        "args": {
+            "thread_id": {"required": True, "type": "string"},
+            "--draft-id": {"required": False, "type": "string"},
+            "--account": {"required": False, "type": "string"},
+        },
+        "safety": "read",
+        "examples": ["shm draft status 19d001f35612a211 --draft-id draft00abc123 --account owner@example.com"],
+    },
+    "draft.attest-render": {
+        "description": "Create a signed exact live-Superhuman render attestation without mail writes",
+        "args": {
+            "thread_id": {"required": True, "type": "string"},
+            "draft_id": {"required": True, "type": "string"},
+            "--account": {"required": True, "type": "string"},
+            "--output": {"required": True, "type": "directory"},
+            "--cdp-url": {"required": False, "type": "string", "default": "http://127.0.0.1:9222"},
+            "--window-id": {"required": False, "type": "int", "hint": "macOS window ID fallback for screenshots"},
+            "--delay": {"required": False, "type": "int", "default": 20},
+        },
+        "safety": "read",
+        "examples": ["shm draft attest-render THREAD DRAFT --account owner@example.com --output ./preview"],
     },
     "draft.discard": {
         "description": "Discard (soft-delete) a draft",
@@ -294,19 +325,48 @@ SCHEMA: dict[str, dict[str, Any]] = {
         ],
     },
     "send": {
-        "description": "Send a draft — IRREVERSIBLE. Requires --dry-run or --confirm.",
+        "description": "Validate, reconcile, or strictly send an exactly attested draft",
         "args": {
             "thread_id": {"required": True, "type": "string"},
             "draft_id": {"required": True, "type": "string"},
-            "--dry-run": {"required": False, "type": "flag", "hint": "Validate without sending"},
-            "--confirm": {"required": False, "type": "flag", "hint": "Actually send (irreversible)"},
+            "--dry-run": {"required": False, "type": "flag", "hint": "Metadata/lifecycle preflight only"},
+            "--status": {"required": False, "type": "flag", "hint": "Reconcile without sending"},
+            "--confirm": {"required": False, "type": "flag", "hint": "Strict exact-attested send"},
+            "--account": {"required": False, "type": "string"},
+            "--attestation": {"required": False, "type": "string", "hint": "Required with --confirm"},
+            "--approval-receipt": {"required": False, "type": "string", "hint": "Externally signed exact-send receipt; required with --confirm"},
+            "--approval-ref": {"required": False, "type": "string", "hint": "Deprecated audit correlation; never authorizes"},
+            "--cdp-url": {"required": False, "type": "string", "default": "http://127.0.0.1:9222"},
+            "--window-id": {"required": False, "type": "int"},
             "--delay": {"required": False, "type": "int", "default": 20},
+            "--wait": {"required": False, "type": "float", "default": 120},
         },
         "safety": "irreversible",
         "examples": [
-            "shm send --dry-run 19d001f35612a211 draft00abc123",
-            "shm send --confirm 19d001f35612a211 draft00abc123",
+            "shm send --dry-run THREAD DRAFT --account owner@example.com",
+            "shm send status THREAD DRAFT --account owner@example.com --wait 120",
+            "shm send --confirm THREAD DRAFT --account owner@example.com --attestation ID --approval-receipt RECEIPT.json --wait 120",
         ],
+    },
+    "approval.verify": {
+        "description": "Verify an externally signed exact-send receipt and replay state",
+        "args": {
+            "reference": {"required": True, "type": "string"},
+            "--attestation": {"required": True, "type": "string"},
+        },
+        "safety": "read",
+        "examples": ["shm approval verify RECEIPT.json --attestation ID_OR_PATH"],
+    },
+    "attestation.show": {
+        "description": "Verify and inspect a render attestation without exposing mail content",
+        "args": {
+            "reference": {"required": True, "type": "string", "hint": "Attestation ID or local artifact path"},
+            "--account": {"required": False, "type": "string"},
+            "--thread-id": {"required": False, "type": "string"},
+            "--draft-id": {"required": False, "type": "string"},
+        },
+        "safety": "read",
+        "examples": ["shm attestation show ID --account owner@example.com --thread-id THREAD --draft-id DRAFT"],
     },
     "setup": {
         "description": "Auto-detect credentials from local Superhuman app and write config.json",
@@ -532,6 +592,7 @@ def _build_parser() -> _ShmParser:
 
     t_ud = _sub(tsub, "userdata", help="Read userdata from API (advanced)", schema_key="thread.userdata")
     t_ud.add_argument("thread_id")
+    t_ud.add_argument("--account")
 
     t_list = _sub(tsub, "list", help="List recent threads", schema_key="thread.list")
     t_list.add_argument("--limit", type=int, default=20)
@@ -599,9 +660,25 @@ def _build_parser() -> _ShmParser:
     d_compose.add_argument("--bcc", action="append", default=[])
     _add_smart_send_args(d_compose)
 
-    d_read = _sub(dsub, "read", help="Read draft(s)", schema_key="draft.read")
+    d_read = _sub(dsub, "read", help="Read draft(s) with lifecycle", schema_key="draft.read")
     d_read.add_argument("thread_id")
     d_read.add_argument("--draft-id")
+    d_read.add_argument("--account")
+    d_read.add_argument("--active-only", action="store_true")
+
+    d_status = _sub(dsub, "status", help="Read canonical draft lifecycle", schema_key="draft.status")
+    d_status.add_argument("thread_id")
+    d_status.add_argument("--draft-id")
+    d_status.add_argument("--account")
+
+    d_attest = _sub(dsub, "attest-render", help="Create exact live-render attestation", schema_key="draft.attest-render")
+    d_attest.add_argument("thread_id")
+    d_attest.add_argument("draft_id")
+    d_attest.add_argument("--account", required=True)
+    d_attest.add_argument("--output", required=True)
+    d_attest.add_argument("--cdp-url", default="http://127.0.0.1:9222")
+    d_attest.add_argument("--window-id", type=int)
+    d_attest.add_argument("--delay", type=int, default=20)
 
     d_discard = _sub(dsub, "discard", help="Discard a draft", schema_key="draft.discard")
     d_discard.add_argument("thread_id")
@@ -643,9 +720,33 @@ def _build_parser() -> _ShmParser:
     send_p.add_argument("thread_id")
     send_p.add_argument("draft_id")
     send_g = send_p.add_mutually_exclusive_group(required=True)
-    send_g.add_argument("--dry-run", action="store_true", help="Validate without sending")
-    send_g.add_argument("--confirm", action="store_true", help="Actually send (irreversible)")
+    send_g.add_argument("--dry-run", action="store_true", help="Metadata/lifecycle preflight without sending")
+    send_g.add_argument("--status", action="store_true", help="Reconcile status without sending")
+    send_g.add_argument("--confirm", action="store_true", help="Strict exact-attested send (irreversible)")
+    send_p.add_argument("--account")
+    send_p.add_argument("--attestation")
+    send_p.add_argument("--approval-receipt", help="Externally signed exact-send approval receipt")
+    send_p.add_argument("--approval-ref", help="Deprecated audit correlation only; never grants authority")
+    send_p.add_argument("--cdp-url", default="http://127.0.0.1:9222")
+    send_p.add_argument("--window-id", type=int)
     send_p.add_argument("--delay", type=int, default=20)
+    send_p.add_argument("--wait", type=float, default=120)
+
+    # -- attestation (read-only inspection) --
+    attestation_p = _sub(sub, "attestation", help="Inspect exact render attestations")
+    asub = attestation_p.add_subparsers(dest="action")
+    a_show = _sub(asub, "show", help="Verify and show safe attestation metadata", schema_key="attestation.show")
+    a_show.add_argument("reference")
+    a_show.add_argument("--account")
+    a_show.add_argument("--thread-id")
+    a_show.add_argument("--draft-id")
+
+    # -- approval (read-only external authority verification) --
+    approval_p = _sub(sub, "approval", help="Verify externally issued exact-send approval receipts")
+    apsub = approval_p.add_subparsers(dest="action")
+    ap_verify = _sub(apsub, "verify", help="Verify receipt authority/binding/replay state", schema_key="approval.verify")
+    ap_verify.add_argument("reference")
+    ap_verify.add_argument("--attestation", required=True)
 
     # -- setup --
     setup_p = _sub(sub, "setup", help="Auto-detect credentials from local Superhuman app", schema_key="setup")
@@ -667,9 +768,28 @@ def _build_parser() -> _ShmParser:
 # ---------------------------------------------------------------------------
 
 
+def _typed_send_exit(data: dict[str, Any]) -> int:
+    if data.get("sent") or data.get("state") == "scheduled":
+        return 0
+    if data.get("state") in {
+        "send_requested",
+        "send_pending_undo",
+        "sent_backend_confirmed",
+        "inconsistent",
+        "unknown",
+    }:
+        return 4
+    return 1
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
-    args = parser.parse_args(argv)
+    raw_argv = list(argv) if argv is not None else list(sys.argv[1:])
+    # Additive spelling from the lifecycle design while retaining the existing
+    # flag-first ``shm send --dry-run THREAD DRAFT`` surface.
+    if len(raw_argv) >= 2 and raw_argv[:2] == ["send", "status"]:
+        raw_argv[1] = "--status"
+    args = parser.parse_args(raw_argv)
 
     if not args.command:
         return emit(fail("shm", [error("input", "NO_COMMAND", False,
@@ -682,7 +802,7 @@ def main(argv: list[str] | None = None) -> int:
         elif args.action == "messages":
             return emit(_thread.messages(args.thread_id))
         elif args.action == "userdata":
-            return emit(_thread.userdata(args.thread_id))
+            return emit(_thread.userdata(args.thread_id, account=args.account))
         elif args.action == "list":
             result = _thread.list_threads(limit=args.limit, unread=args.unread, include_participants=args.participants, account=args.account)
             if args.fail_empty and result["status"] == "succeeded" and result["data"]["returned"] == 0:
@@ -715,7 +835,7 @@ def main(argv: list[str] | None = None) -> int:
             "sensitivity_tenant_id": getattr(args, "sensitivity_tenant_id", None),
         }
         if not hasattr(args, "action") or not args.action:
-            return emit(fail("draft", [error("input", "MISSING_ACTION", False, "Use: shm draft reply|reply-all|forward|compose|read|discard|attach|share|unshare")]))
+            return emit(fail("draft", [error("input", "MISSING_ACTION", False, "Use: shm draft reply|reply-all|forward|compose|read|status|attest-render|discard|attach|share|unshare")]))
         elif args.action in ("reply", "reply-all", "forward", "compose"):
             schema_key = f"draft.{args.action}"
             try:
@@ -731,7 +851,40 @@ def main(argv: list[str] | None = None) -> int:
             elif args.action == "compose":
                 return emit(_draft.create_compose(args.subject, body, to=args.to, cc=args.cc, bcc=args.bcc, body_html=body_html, **ss))
         elif args.action == "read":
-            return emit(_draft.read(args.thread_id, draft_id=args.draft_id))
+            return emit(_draft.read(
+                args.thread_id,
+                draft_id=args.draft_id,
+                account=args.account,
+                active_only=args.active_only,
+            ))
+        elif args.action == "status":
+            return emit(_draft.status(args.thread_id, draft_id=args.draft_id, account=args.account))
+        elif args.action == "attest-render":
+            try:
+                record = _attestation.create(
+                    args.thread_id,
+                    args.draft_id,
+                    account=args.account,
+                    output_dir=Path(args.output),
+                    delay=args.delay,
+                    renderer=_attestation.CdpRenderer(cdp_url=args.cdp_url, window_id=args.window_id),
+                )
+                return emit(ok("draft.attest-render", {
+                    "attestation_id": record["attestation_id"],
+                    "artifact_path": record["artifact_path"],
+                    "created_at": record["created_at"],
+                    "expires_at": record["expires_at"],
+                    "send_eligible": record["send_eligible"],
+                    "confidence": record["confidence"],
+                    "account_email": record["account"]["email"],
+                    "thread_id": record["thread_id"],
+                    "draft_id": record["draft_id"],
+                    "fingerprint": record["fingerprint"]["exact"],
+                    "renderer": record["renderer"],
+                    "screenshots": record["screenshots"],
+                }))
+            except _attestation.AttestationError as exc:
+                return emit(fail("draft.attest-render", [error("conflict", exc.code, False, exc.hint)]))
         elif args.action == "discard":
             return emit(_draft.discard(args.thread_id, args.draft_id))
         elif args.action == "attach":
@@ -756,9 +909,65 @@ def main(argv: list[str] | None = None) -> int:
     # -- send --
     elif args.command == "send":
         if args.dry_run:
-            return emit(_send.validate(args.thread_id, args.draft_id))
+            return emit(_send.validate(args.thread_id, args.draft_id, account=args.account))
+        elif args.status:
+            if not args.account:
+                return emit(fail("send.status", [error("input", "ACCOUNT_REQUIRED", False, "--account is required")]))
+            result = _send.status(
+                args.thread_id,
+                args.draft_id,
+                account=args.account,
+                wait=args.wait,
+            )
+            if result["status"] == "succeeded":
+                return emit(result, exit_code=_typed_send_exit(result["data"]))
+            return emit(result)
         elif args.confirm:
-            return emit(_send.execute(args.thread_id, args.draft_id, delay=args.delay))
+            result = _send.execute(
+                args.thread_id,
+                args.draft_id,
+                delay=args.delay,
+                account=args.account,
+                attestation=args.attestation,
+                approval_receipt=args.approval_receipt,
+                approval_ref=args.approval_ref,
+                wait=args.wait,
+                renderer=_attestation.CdpRenderer(cdp_url=args.cdp_url, window_id=args.window_id),
+            )
+            if result["status"] == "succeeded":
+                return emit(result, exit_code=_typed_send_exit(result["data"]))
+            return emit(result)
+
+    # -- attestation --
+    elif args.command == "attestation":
+        if not hasattr(args, "action") or not args.action:
+            return emit(fail("attestation", [error("input", "MISSING_ACTION", False, "Use: shm attestation show")]))
+        if args.action == "show":
+            try:
+                summary = _attestation.show_safe(
+                    args.reference,
+                    account=args.account,
+                    thread_id=args.thread_id,
+                    draft_id=args.draft_id,
+                )
+                return emit(ok("attestation.show", summary))
+            except _attestation.AttestationError as exc:
+                return emit(fail("attestation.show", [error("conflict", exc.code, False, exc.hint)]))
+
+    # -- approval --
+    elif args.command == "approval":
+        if not hasattr(args, "action") or not args.action:
+            return emit(fail("approval", [error("input", "MISSING_ACTION", False, "Use: shm approval verify")]))
+        if args.action == "verify":
+            try:
+                return emit(ok(
+                    "approval.verify",
+                    _approval.show_safe(args.reference, attestation_reference=args.attestation),
+                ))
+            except _approval.ApprovalError as exc:
+                return emit(fail("approval.verify", [error("conflict", exc.code, False, exc.hint)]))
+            except _attestation.AttestationError as exc:
+                return emit(fail("approval.verify", [error("conflict", exc.code, False, exc.hint)]))
 
     # -- setup --
     elif args.command == "setup":

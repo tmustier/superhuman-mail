@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.nexcade.ai/superhuman-mail/approval-receipt-v1.schema.json",
+  "title": "Superhuman exact-send approval receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "receipt_id",
+    "issuer",
+    "key_id",
+    "issued_at",
+    "expires_at",
+    "nonce",
+    "approver",
+    "action",
+    "provider",
+    "binding",
+    "signature"
+  ],
+  "properties": {
+    "schema": { "const": "shm-approval-receipt/v1" },
+    "receipt_id": { "$ref": "#/$defs/sha256" },
+    "issuer": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "key_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "issued_at": { "type": "string", "format": "date-time" },
+    "expires_at": { "type": "string", "format": "date-time" },
+    "nonce": { "type": "string", "minLength": 16, "maxLength": 256 },
+    "approver": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["principal", "approval_event_id"],
+      "properties": {
+        "principal": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "approval_event_id": { "type": "string", "minLength": 1, "maxLength": 256 }
+      }
+    },
+    "action": { "const": "superhuman.send" },
+    "provider": { "const": "superhuman" },
+    "binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "action",
+        "provider",
+        "account_provider_user_id_sha256",
+        "account_email_sha256",
+        "thread_id_sha256",
+        "draft_id_sha256",
+        "attestation_id",
+        "outgoing_fingerprint",
+        "outgoing_payload_sha256",
+        "recipient_envelope_sha256",
+        "renderer_build_sha256",
+        "screenshot_set_sha256",
+        "send_identity_sha256",
+        "delay_seconds",
+        "scheduled_for_sha256"
+      ],
+      "properties": {
+        "action": { "const": "superhuman.send" },
+        "provider": { "const": "superhuman" },
+        "account_provider_user_id_sha256": { "$ref": "#/$defs/sha256" },
+        "account_email_sha256": { "$ref": "#/$defs/sha256" },
+        "thread_id_sha256": { "$ref": "#/$defs/sha256" },
+        "draft_id_sha256": { "$ref": "#/$defs/sha256" },
+        "attestation_id": { "$ref": "#/$defs/sha256" },
+        "outgoing_fingerprint": { "$ref": "#/$defs/sha256" },
+        "outgoing_payload_sha256": { "$ref": "#/$defs/sha256" },
+        "recipient_envelope_sha256": { "$ref": "#/$defs/sha256" },
+        "renderer_build_sha256": { "$ref": "#/$defs/sha256" },
+        "screenshot_set_sha256": { "$ref": "#/$defs/sha256" },
+        "send_identity_sha256": { "$ref": "#/$defs/sha256" },
+        "delay_seconds": { "type": "integer", "minimum": 0 },
+        "scheduled_for_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "signature": {
+      "type": "string",
+      "pattern": "^ed25519:[A-Za-z0-9_-]+={0,2}$"
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    }
+  }
+}

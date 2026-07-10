@@ -1,5 +1,39 @@
 # Changelog
 
+## v0.3.0 — 2026-07-10
+
+This safety release replaces ambiguous draft/send behavior with typed lifecycle, local attempt reconciliation, and exact live-Superhuman render attestation.
+
+### Breaking send changes
+
+- `shm send --confirm` now requires `--account`, `--attestation`, and an externally signed `--approval-receipt`; caller-supplied `--approval-ref` never authorizes
+- HTTP acceptance no longer returns unconditional `sent: true`
+- pending/backend-only/unknown/inconsistent possible-send outcomes exit `4`; only provider-confirmed immediate sends return sent success
+- customer sends have no raw-HTML or unattested fallback
+
+### Added
+
+- canonical lifecycle/provenance classifier joining source wrappers, send jobs, and immutable provider messages
+- `shm draft status`, lifecycle-aware `draft read --active-only`, and `shm send status`
+- mandatory execute-time rejection for terminal, discarded, pending/scheduled, inconsistent, invalid-recipient, wrong-account, and empty-body drafts
+- private SQLite attempt journal with stable `superhuman_id`, one local POST claim, and reconcile-before-retry behavior
+- exact renderer attestation through the live Superhuman DraftModel/editor/BodyContent pipeline
+- post-grace second no-write renderer probe and complete payload/source/version/signature/attachment stale binding
+- signed, expiring local attestation artifacts and safe `shm attestation show` inspection
+- `shm approval verify`, the `shm-approval-receipt/v1` Ed25519 contract, exact content-free approval bindings, and typed issuer/key/receipt state
+- atomic single-use receipt consumption in the same SQLite transaction as the only local POST claim
+- macOS native-window screenshot fallback for Electron CDP targets
+- adversarial tests for terminal DRAFT residue, optimistic SENT overlays, delayed completion, lost responses, local concurrency, stale payloads, attachment verification, privacy, and provider gating
+
+### Safety and scope
+
+- source-draft IDs, labels, timestamps, and HTTP 2xx are never outbound proof
+- only an unambiguously linked immutable provider `SENT` message sets `sent: true`
+- local idempotency is explicitly scoped to cooperating processes sharing one journal; cross-machine/global exactly-once is not claimed
+- full attestation artifacts stay in `0700`/`0600` local storage; CLI inspection redacts message content and stable private provider IDs
+- Superhuman app+web renderer builds are code-allowlisted, non-idempotent probe traffic fails closed, and attestation signing keys come only from Keychain
+- receipt trust roots cannot come from environment/user-writable files; absent external issuer trust disables confirm
+
 ## v0.2.1 — 2026-03-24
 
 This patch release includes all changes merged since `v0.2.0`.
