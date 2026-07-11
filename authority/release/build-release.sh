@@ -11,6 +11,8 @@ REPO=$(cd "$AUTHORITY/.." && pwd)
 [[ $(uname -s) == Darwin ]] || { echo "macOS required" >&2; exit 2; }
 command -v codesign >/dev/null; command -v xcrun >/dev/null; command -v shasum >/dev/null
 [[ -x "$NODE" && -x "$SHM" ]] || { echo "pinned node and shm must be executable" >&2; exit 2; }
+file "$NODE" | grep -q 'Mach-O' || { echo "pinned node must be a macOS Mach-O executable" >&2; exit 2; }
+file "$SHM" | grep -q 'Mach-O' || { echo "pinned shm must be a standalone macOS Mach-O executable" >&2; exit 2; }
 [[ -z $(git -C "$REPO" status --porcelain --untracked-files=all) ]] || { echo "exact-head release requires a clean source tree" >&2; exit 2; }
 CONTRACT=$($SHM executor-contract)
 grep -q 'shm-executor/v1' <<<"$CONTRACT" || { echo "pinned shm has wrong executor contract" >&2; exit 2; }
@@ -63,7 +65,9 @@ sign_app() {
   codesign --force --options runtime --sign "$identity" "$app/Contents/MacOS/node"
   [[ ! -e "$app/Contents/MacOS/launch" ]] || codesign --force --options runtime --sign "$identity" "$app/Contents/MacOS/launch"
   [[ ! -e "$app/Contents/MacOS/shm" ]] || codesign --force --options runtime --sign "$identity" "$app/Contents/MacOS/shm"
-  [[ ! -e "$app/Contents/MacOS/credential-bridge" ]] || codesign --force --options runtime --sign "$identity" "$app/Contents/MacOS/credential-bridge"
+  # The credential bridge was signed and hashed before its pin was embedded.
+  # Re-signing it here would silently invalidate the embedded release pin.
+  [[ ! -e "$app/Contents/MacOS/credential-bridge" ]] || codesign --verify --strict "$app/Contents/MacOS/credential-bridge"
   codesign --force --options runtime --sign "$identity" "$app"
   codesign --verify --deep --strict --verbose=2 "$app"
 }
