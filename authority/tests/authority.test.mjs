@@ -381,6 +381,22 @@ test("receipt expiry at the atomic post claim fails closed after grace", async (
   assert.equal(sends, 0);
 });
 
+test("executor retry resumes an interrupted non-expired grace without a second initial render", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "shm-grace-resume-")); dirs.push(dir);
+  const path = join(dir, "executor.sqlite3"); const key = keys(); let now = Date.now(); const bind = binding();
+  const receipt = receiptFixture({ key, now, bind }); const journal = new ExecutorJournal(path);
+  journal.start({ receiptId: receipt.receipt_id, receiptHash: sha256(receipt), executionHash: sha256({ account: "owner@example.test", thread_id: "thread-1", draft_id: "draft-1", attestation_id: bind.attestation_id }), bindingHash: sha256(bind), revisionId: sha256("revision"), expiresAt: receipt.expires_at, nowMs: now });
+  now += 30_000; let renders = 0; let sends = 0;
+  const restarted = new SendExecutor({
+    journal: new ExecutorJournal(path),
+    provider: { async render() { renders += 1; return { revision_id: sha256("revision"), draft_fingerprint: bind.outgoing_fingerprint, approval_binding: bind }; }, async send() { sends += 1; return { accepted: true, provider_confirmed: true, provider_message_id: "resumed" }; } },
+    trust: { issuer: "test-issuer", keyId: "test-key", publicKeyPem: key.publicKeyPem, allowedApprovers: ["slack:test-approver"] },
+    now: () => now, sleep: async (ms) => { now += ms; },
+  });
+  const result = await restarted.execute({ receipt, execution: { account: "owner@example.test", thread_id: "thread-1", draft_id: "draft-1", attestation_id: bind.attestation_id } });
+  assert.equal(result.state, "provider_confirmed"); assert.equal(renders, 1); assert.equal(sends, 1);
+});
+
 test("executor restart converts an interrupted claimed row to truthful unknown", () => {
   const dir = mkdtempSync(join(tmpdir(), "shm-crash-")); dirs.push(dir);
   const path = join(dir, "executor.sqlite3"); const now = Date.now();

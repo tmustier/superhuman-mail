@@ -442,6 +442,10 @@ def test_executor_prepared_record_rerenders_without_worker_hmac(monkeypatch, tmp
             record, account=ACCOUNT["email"], renderer=FakeRenderer(), output_dir=state / "send-time",
         )
     assert verified["fingerprint"]["exact"] == record["fingerprint"]["exact"]
+    marker.unlink()
+    with pytest.raises(attestation.AttestationError) as caught:
+        attestation.verify_prepared(record, marker_root=marker_root)
+    assert caught.value.code == "ATTESTATION_PREPARED_INVALID"
 
 
 def test_renderer_payload_drift_after_approval_blocks(tmp_path):

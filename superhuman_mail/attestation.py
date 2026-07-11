@@ -463,28 +463,34 @@ def verify_prepared(record: dict[str, Any], *, marker_root: Path, require_unexpi
     record_path = state / "attestations" / f"{attestation_id}.json"
     marker_path = marker_root / f"{attestation_id.removeprefix('sha256:')}.json"
     prepare_root = state / "prepared-renders"
-    for directory in (state, marker_root, prepare_root, state / "attestations"):
-        metadata = directory.stat()
-        if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.geteuid() or metadata.st_mode & 0o022:
-            raise AttestationError("ATTESTATION_PREPARED_UNSAFE", "Prepared attestation storage is unsafe")
-    for path in (record_path, marker_path):
-        metadata = path.lstat()
-        if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.geteuid() or metadata.st_mode & 0o077:
-            raise AttestationError("ATTESTATION_PREPARED_UNSAFE", "Prepared attestation marker or record is unsafe")
+    try:
+        for directory in (state, marker_root, prepare_root, state / "attestations"):
+            metadata = directory.stat()
+            if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.geteuid() or metadata.st_mode & 0o022:
+                raise AttestationError("ATTESTATION_PREPARED_UNSAFE", "Prepared attestation storage is unsafe")
+        for path in (record_path, marker_path):
+            metadata = path.lstat()
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.geteuid() or metadata.st_mode & 0o077:
+                raise AttestationError("ATTESTATION_PREPARED_UNSAFE", "Prepared attestation marker or record is unsafe")
+    except OSError as exc:
+        raise AttestationError("ATTESTATION_PREPARED_INVALID", "Prepared attestation marker or record is missing") from exc
     try:
         marker = json.loads(marker_path.read_text())
     except (OSError, json.JSONDecodeError) as exc:
         raise AttestationError("ATTESTATION_PREPARED_INVALID", "Prepared attestation marker is invalid") from exc
     if marker != {"schema": "shm-trusted-prepared/v1", "attestation_id": attestation_id}:
         raise AttestationError("ATTESTATION_PREPARED_INVALID", "Prepared attestation marker does not match")
-    prepare_root_resolved = prepare_root.resolve(strict=True)
-    for screenshot in record.get("screenshots") or []:
-        resolved = Path(str(screenshot.get("path") or "")).resolve(strict=True)
-        if prepare_root_resolved not in resolved.parents:
-            raise AttestationError("ATTESTATION_PREPARED_INVALID", "Prepared screenshot escaped trusted storage")
-        metadata = resolved.stat()
-        if metadata.st_uid != os.geteuid() or metadata.st_mode & 0o077:
-            raise AttestationError("ATTESTATION_PREPARED_UNSAFE", "Prepared screenshot ownership or mode is unsafe")
+    try:
+        prepare_root_resolved = prepare_root.resolve(strict=True)
+        for screenshot in record.get("screenshots") or []:
+            resolved = Path(str(screenshot.get("path") or "")).resolve(strict=True)
+            if prepare_root_resolved not in resolved.parents:
+                raise AttestationError("ATTESTATION_PREPARED_INVALID", "Prepared screenshot escaped trusted storage")
+            metadata = resolved.stat()
+            if metadata.st_uid != os.geteuid() or metadata.st_mode & 0o077:
+                raise AttestationError("ATTESTATION_PREPARED_UNSAFE", "Prepared screenshot ownership or mode is unsafe")
+    except OSError as exc:
+        raise AttestationError("ATTESTATION_PREPARED_INVALID", "Prepared screenshot is missing") from exc
     _verify_content_and_artifacts(record, require_unexpired=require_unexpired)
 
 

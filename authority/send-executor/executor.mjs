@@ -184,23 +184,32 @@ export class SendExecutor {
     });
     const bindingHash = sha256(receipt.binding);
     const prior = this.journal.entry(receipt.receipt_id);
+    let verified; let status;
     if (prior) {
       if (prior.receiptHash !== receiptHash || prior.executionHash !== executionHash || prior.bindingHash !== bindingHash)
         throw new Error("receipt_replay_conflict");
-      return prior;
+      if (prior.state !== "grace") return prior;
+      try { verified = verifyReceipt(receipt, { trust: this.trust, now: this.now() }); }
+      catch (error) {
+        if (error instanceof Error && error.message === "receipt_expired")
+          return this.journal.failGrace(receipt.receipt_id, "expired", this.now(), "receipt_expired_during_resume");
+        throw error;
+      }
+      status = prior;
+    } else {
+      verified = verifyReceipt(receipt, { trust: this.trust, now: this.now() });
+      if (Date.parse(verified.expiresAt) < this.now() + MIN_GRACE_MS + CLAIM_MARGIN_MS)
+        throw new Error("receipt_lifetime_insufficient_for_grace");
+      const rendered = await this.provider.render(execution);
+      exact(rendered, ["revision_id", "draft_fingerprint", "approval_binding"], "rendered_draft");
+      if (canonicalJson(rendered.approval_binding) !== canonicalJson(receipt.binding) ||
+          rendered.draft_fingerprint !== receipt.binding.outgoing_fingerprint)
+        throw new Error("rerender_binding_mismatch");
+      status = this.journal.start({
+        receiptId: verified.receiptId, receiptHash, executionHash, bindingHash,
+        revisionId: rendered.revision_id, expiresAt: verified.expiresAt, nowMs: this.now(),
+      });
     }
-    const verified = verifyReceipt(receipt, { trust: this.trust, now: this.now() });
-    if (Date.parse(verified.expiresAt) < this.now() + MIN_GRACE_MS + CLAIM_MARGIN_MS)
-      throw new Error("receipt_lifetime_insufficient_for_grace");
-    const rendered = await this.provider.render(execution);
-    exact(rendered, ["revision_id", "draft_fingerprint", "approval_binding"], "rendered_draft");
-    if (canonicalJson(rendered.approval_binding) !== canonicalJson(receipt.binding) ||
-        rendered.draft_fingerprint !== receipt.binding.outgoing_fingerprint)
-      throw new Error("rerender_binding_mismatch");
-    let status = this.journal.start({
-      receiptId: verified.receiptId, receiptHash, executionHash, bindingHash,
-      revisionId: rendered.revision_id, expiresAt: verified.expiresAt, nowMs: this.now(),
-    });
     if (status.state !== "grace") return status;
     while (this.now() < status.notBeforeMs) {
       await this.sleep(Math.min(250, status.notBeforeMs - this.now()));
