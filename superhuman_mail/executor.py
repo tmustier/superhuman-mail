@@ -8,7 +8,9 @@ bridge is the only production process that may supply Superhuman credentials.
 from __future__ import annotations
 
 import hmac
+import json
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -21,7 +23,7 @@ CONTRACT = {
     "render": {
         "command": "draft get",
         "result": "content-free-render-envelope",
-        "requires": ["account", "thread_id", "draft_id", "attestation"],
+        "requires": ["account", "thread_id", "draft_id", "imported_attestation_id"],
     },
     "send": {
         "command": "draft send",
@@ -59,8 +61,23 @@ def _load_bound(
     thread_id: str,
     draft_id: str,
 ) -> dict[str, Any]:
-    record = attestation.load(reference)
-    attestation.verify(record)
+    import_root_value = os.environ.get("SHM_EXECUTOR_IMPORTS_DIR")
+    if import_root_value:
+        reference_text = str(reference)
+        if re.fullmatch(r"sha256:[a-f0-9]{64}", reference_text) is None:
+            raise ExecutorContractError("ATTESTATION_ID_INVALID", "Executor accepts only a canonical attestation ID")
+        import_root = Path(import_root_value)
+        record_path = import_root / reference_text.removeprefix("sha256:") / "attestation.json"
+        try:
+            record = json.loads(record_path.read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ExecutorContractError("ATTESTATION_NOT_IMPORTED", "Attestation was not semantically imported") from exc
+        if not isinstance(record, dict) or record.get("attestation_id") != reference_text:
+            raise ExecutorContractError("ATTESTATION_IMPORT_INVALID", "Imported attestation identity is malformed")
+        attestation.verify_imported(record, import_root=import_root)
+    else:
+        record = attestation.load(reference)
+        attestation.verify(record)
     if str(record.get("thread_id")) != thread_id or str(record.get("draft_id")) != draft_id:
         raise ExecutorContractError("DRAFT_BINDING_MISMATCH", "Attestation belongs to another draft")
     if str((record.get("account") or {}).get("email", "")).lower() != account.lower():

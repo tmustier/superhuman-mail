@@ -109,7 +109,7 @@ The inspector verifies canonical ID/HMAC, screenshot hashes, expiry, and optiona
 
 ### 4. Grace period and strict execution
 
-The external Slack approval broker records the exact `approval_binding`, presents the complete message, authenticates the authorized human decision, and issues a ≤5-minute Ed25519 receipt. Verify it read-only, then let the credential-isolated trusted executor run its grace period and invoke:
+The external Slack approval broker verifies the portable attestation bundle, presents every reviewed outgoing field plus all render screenshots, authenticates the authorized Socket Mode decision, and issues a ≤5-minute Ed25519 receipt. Verify it read-only, then submit it to the credential-isolated trusted executor:
 
 ```bash
 shm approval verify RECEIPT.json --attestation ID_OR_PATH
@@ -121,27 +121,25 @@ shm send --confirm THREAD DRAFT \
   --wait 120
 ```
 
-Immediately before POST, `shm`:
+`shm send --confirm` performs no provider call. It verifies the local artifact/receipt, sends the record and digest-checked screenshot bytes over the fixed Unix socket, and requests execution by canonical `sha256:` attestation ID. The executor then:
 
-1. reruns authoritative lifecycle/envelope/body preflight;
-2. verifies account, artifact signature, expiry, thread/draft, approved delay, and source history;
-3. verifies the receipt schema/canonical ID, pinned issuer/key, Ed25519 signature, authorized approver, lifetime, action/provider, and exact attestation binding;
-4. creates or resumes one receipt-bound local attempt identity;
-5. runs a second no-write live-Superhuman renderer probe with the reserved ID;
-6. requires the complete exact fingerprint and outgoing payload bytes to equal approval;
-7. in one `BEGIN IMMEDIATE`, rechecks expiry, consumes the receipt ID, and claims the only local POST;
-8. posts the freshly probed exact payload;
-9. reconciles userdata/provider evidence without minting another identity.
+1. re-verifies the receipt against the portable attestation and imports it into executor-owned content-addressed storage (never a caller path);
+2. runs authoritative lifecycle/envelope/body preflight and a no-write live renderer probe;
+3. durably starts a minimum 60-second abort grace, requiring enough receipt lifetime for grace plus claim margin;
+4. reruns the renderer after grace and requires complete revision, fingerprint, binding, and outgoing-payload equality;
+5. in one `BEGIN IMMEDIATE`, rechecks expiry and atomically changes the only receipt row from `grace` to `claimed`;
+6. invokes the credential bridge's conditional provider call once;
+7. reconciles provider evidence without retry after any ambiguous boundary.
 
 There is no unattested fallback for customer mail.
 
 ## Approval authority boundary
 
-Caller-controlled `--approval-ref` is deprecated correlation and never authorizes. Before external verification, results say `approval_authority: external_receipt_required`, `approval_verified: false`, and `unattended_send_eligible: false`. A verified receipt changes authority to `external_ed25519_receipt_v1`; its ID/issuer/key are journaled and its one local consumption is atomic with the POST claim.
+Caller-controlled `--approval-ref` is deprecated correlation and never authorizes. Before external verification, results say `approval_authority: external_receipt_required`, `approval_verified: false`, and `unattended_send_eligible: false`. A verified receipt changes authority to `external_ed25519_receipt_v1`; consumption state is authoritative only in the isolated executor journal, never in local inspection state.
 
 Environment variables and user-writable files cannot install receipt trust roots. Roots are release-pinned or loaded from `/Library/Application Support/superhuman-mail/approval-trust-v1.json` only when it is a root-owned regular file not writable by group/others. With no root, confirm fails `APPROVAL_TRUST_UNAVAILABLE`.
 
-This verifier does not by itself isolate transport credentials. Production must run it and the POST inside one canonical, durable, broker-owned/root-owned or remote trusted executor; the unattended worker must not possess Superhuman write credentials, the issuer private key, a writable verifier/trust root, or a local/raw transport fallback. See [`approval-receipt-issuer-contract.md`](approval-receipt-issuer-contract.md).
+Verification alone does not isolate transport credentials. Production runs receipt consumption and the provider call inside one canonical durable executor under its own service UID; only the separately signed credential bridge can read the provider token. The unattended worker must not possess that credential, the issuer private key, a writable trust root, or a local/raw transport fallback. See [`approval-receipt-issuer-contract.md`](approval-receipt-issuer-contract.md).
 
 ## Result and exit contract
 
@@ -161,17 +159,13 @@ Exit codes:
 - `1`: rejected, tampered/stale attestation, or definitely terminal failure;
 - `4`: pending/unknown/backend-only or inconsistent possible-send evidence after the requested wait.
 
-Follow-up/CRM automation must consume only `provider_confirmed: true` / `state: sent_provider_confirmed`.
+Follow-up/CRM automation must consume only `provider_confirmed: true` / `state: provider_confirmed` from the authority result.
 
 ## Idempotency scope
 
-The SQLite attempt journal must live in the canonical durable state directory of the trusted executor. A unique `(immutable_provider_user_id, draft_id)` row, permanent receipt-consumption identity, and `BEGIN IMMEDIATE` transaction guarantee one receipt consumption/POST claim for cooperating executor processes sharing that journal.
+The executor SQLite journal is the only receipt-consumption journal. `receipt_id` is its primary key; immutable receipt/execution/binding hashes detect conflicting replay, and `BEGIN IMMEDIATE` provides one `grace -> claimed` transition.
 
-This does **not** serialize another executor host/state directory or the native Superhuman UI. Production therefore permits transport credentials in only one canonical executor authority. Outputs continue to state the narrower mechanism scope:
-
-```text
-idempotency_scope: local_cooperating_processes
-```
+This does **not** serialize another credential authority or the native Superhuman UI. Production therefore permits transport credentials in only one canonical executor/bridge boundary.
 
 Global exactly-once requires a vendor idempotency key or compare-and-set send contract.
 

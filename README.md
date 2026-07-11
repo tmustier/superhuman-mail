@@ -154,9 +154,9 @@ shm schema draft.forward
 
 ### Strict send semantics
 
-`send --dry-run` is metadata/lifecycle validation only; it reports `send_eligible: false` until an exact live-Superhuman render is attested. `send --confirm` requires an externally issued Ed25519 receipt bound to that exact attestation, reruns the renderer after the trusted executor's grace period, atomically consumes the single-use receipt with the local POST claim, and posts only freshly probed matching bytes. Caller-supplied `--approval-ref` never authorizes.
+`send --dry-run` is metadata/lifecycle validation only; it reports `send_eligible: false` until an exact live-Superhuman render is attested. `send --confirm` is a credential-free thin client: it verifies the Ed25519 receipt locally, imports the portable attestation and screenshot bytes through the fixed executor socket, and asks the executor to enforce its durable 60-second grace, rerender, single claim, and conditional provider call. It has no local journal or transport fallback. Caller-supplied `--approval-ref` never authorizes.
 
-Only `state: sent_provider_confirmed` returns `sent: true`. Accepted/pending/unknown/backend-only or inconsistent possible-send outcomes exit `4`; definitely rejected/failed outcomes exit `1`; provider-confirmed or explicitly scheduled outcomes exit `0`. The local journal prevents duplicate POSTs only among cooperating trusted-executor processes sharing one state directory—global exactly-once is not claimed. Until an external issuer public key is pinned and the transport credentials are isolated in a trusted executor, confirm fails closed with `APPROVAL_TRUST_UNAVAILABLE`.
+Only `state: provider_confirmed` returns `sent: true`. Accepted/pending/unknown outcomes remain non-sent. The executor journal is the one canonical receipt-consumption boundary; global exactly-once outside that credential authority is not claimed. Until an external issuer public key is pinned and the transport credentials are isolated in a trusted executor, confirm fails closed with `APPROVAL_TRUST_UNAVAILABLE`.
 
 See [`docs/send-safety.md`](docs/send-safety.md) for renderer setup, lifecycle evidence, redaction, and retry rules.
 
@@ -294,7 +294,7 @@ pyproject.toml
 - `send` is irreversible and requires exact attestation plus an externally signed, short-lived, exact-binding approval receipt
 - execute-time lifecycle validation blocks terminal source-draft residue and existing pending/scheduled jobs
 - HTTP acceptance is pending, never proof of delivery; provider-confirmed immutable identity is required for `sent: true`
-- retries reuse one local attempt identity and reconcile before any further action
+- retries return the canonical executor's durable receipt state and never claim another provider call
 - draft/comment/share operations are reversible
 - `shm doctor` verifies config, local DB, keychain, and auth before you rely on the CLI
 

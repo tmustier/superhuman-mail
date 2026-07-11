@@ -78,6 +78,12 @@ def _payload(html="<div>Hello</div><br><div>Signature</div>"):
         "subject": "Fixture",
         "html_body": html,
         "attachments": [],
+        "scheduled_for": None,
+        "abort_on_reply": False,
+        "current_message_ids": ["message_earlier"],
+        "mail_merge_recipients": [],
+        "sensitivity_label_id": None,
+        "sensitivity_tenant_id": None,
     }
 
 
@@ -152,6 +158,7 @@ def test_bundled_renderer_declares_versioned_payload_contract():
         for origin, routes in contract["read_only_post_routes"].items()
     } == attestation._READ_ONLY_POST_ROUTES
     assert contract["reminder"] == "persisted_draft_only_current_build"
+    assert set(contract["outgoing_fields"]) == attestation.OUTGOING_FIELDS
     assert "html_body" in contract["outgoing_fields"]
     assert "reminder" not in contract["outgoing_fields"]
 
@@ -213,6 +220,8 @@ def test_create_binds_exact_source_editor_payload_versions_and_screenshots(tmp_p
     record = _create(tmp_path, renderer)
     assert record["send_eligible"] is True
     assert record["confidence"] == "exact_superhuman_renderer"
+    assert record["attestation_id"].startswith("sha256:")
+    assert len(record["attestation_id"]) == 71
     assert record["superhuman_id"] == SID
     assert record["fingerprint"]["fields"]["outgoing_payload"] == attestation.sha256(
         attestation.canonical_bytes(_payload())

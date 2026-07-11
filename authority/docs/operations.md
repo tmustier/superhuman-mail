@@ -22,20 +22,20 @@ Never reuse one signing identity across issuer, signer, and executor. The creden
 - Broker callers → issuer socket only.
 - Issuer identity → signer socket only.
 - Approved executor callers → executor socket only.
-- Issuer native launcher → Slack signing-secret/bot-token bundle only.
+- Issuer native launcher → Slack app-token/bot-token bundle only.
 - Signer native launcher → Ed25519 private-key item only.
 - Credential bridge designated requirement → Superhuman token item only.
 - Executor daemon → credential bridge execute permission; no direct Keychain item access.
-- Worker identity → none of the secret items, signer socket, bridge executable, provider config, trust policy, or state databases.
+- Worker identity → none of the secret items, signer socket, bridge executable, provider config, trust policy, imported attestations, or state databases.
 
-Root-owned directories are mode `0750` or stricter; secret/state files are `0600`; sockets are `0660` with one explicit caller group. Deny supplementary memberships that join boundaries.
+The public trust-policy directory chain is root-owned and non-writable. Each service state directory is owned by its distinct service UID at `0700`; files are `0600`. A daemon owns its socket and runs with the one peer group as its primary launchd group, allowing `0660` without root or a shared service UID. The credential bridge runs as the executor UID and relies on its executable-designated Keychain ACL, not effective UID 0. Deny supplementary memberships that join boundaries.
 
 ## Staged rollout
 
 1. Build from a clean reviewed commit; verify three archives on a separate machine.
-2. Create dedicated service users/groups and state directories. Render templates without committing output.
+2. Create three distinct service UIDs, their peer socket groups, service-owned `0700` state directories, and a separate root-owned non-writable policy directory. Render templates without committing output.
 3. Install artifacts into a content-addressed release directory; verify signatures and hashes after copy; atomically select `current`.
-4. Install the trust policy with one active public key and the configured approver principal. Do not provision private material yet.
+4. Install `/Library/Application Support/superhuman-mail/policy/send-executor-trust.json` with one active root tuple and the configured approver principal. The exact schema is `{callerGid, roots:[{issuer,keyId,publicKeyPem,allowedApprovers}]}` and accepts at most two roots. Do not provision private material yet.
 5. Bootstrap signer with no key and confirm fail-closed behavior; boot it out.
 6. Provision signer key with a Keychain ACL for the signer launcher only. Start signer, then issuer with its own secret and ACL.
 7. Start executor without provider credential. Run fake-provider and render-only probes; all send attempts must fail closed.

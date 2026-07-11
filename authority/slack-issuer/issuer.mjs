@@ -1,5 +1,6 @@
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
+import { OUTGOING_FIELDS, validateAttestationBundle } from "../common/attestation.mjs";
 import { bindingFromEvidence, canonicalJson, sha256, validateBinding } from "../common/receipt.mjs";
 
 const HASH = /^sha256:[a-f0-9]{64}$/;
@@ -28,6 +29,56 @@ export function verifySlackRequest({ secret, timestamp, signature, rawBody, now 
   if (left.length !== right.length || !timingSafeEqual(left, right)) throw new Error("invalid_slack_signature");
 }
 
+function readableHtml(value) {
+  return String(value || "")
+    .replace(/<br\s*\/?\s*>/gi, "\n")
+    .replace(/<\/(p|div|li|tr|h[1-6])\s*>/gi, "\n")
+    .replace(/<[^>]*>/g, "")
+    .replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">")
+    .replace(/&#39;/g, "'").replace(/&quot;/g, '"');
+}
+export function buildApprovalPresentation(evidence, binding) {
+  const payload = evidence.outgoing_payload;
+  exact(payload, OUTGOING_FIELDS, "outgoing_payload");
+  const outgoing = Object.fromEntries(OUTGOING_FIELDS.map((field) => [field, payload[field]]));
+  return {
+    schema: "shm-slack-approval-presentation/v1",
+    account: evidence.account,
+    thread_id: evidence.thread_id,
+    draft_id: evidence.draft_id,
+    attestation_id: evidence.attestation_id,
+    renderer: evidence.renderer,
+    screenshot_sha256: evidence.screenshot_sha256,
+    delay_seconds: evidence.delay_seconds,
+    outgoing: { ...outgoing, html_body_text: readableHtml(payload.html_body) },
+    approval_binding: binding,
+  };
+}
+
+export function decisionFromSocketPayload({ store, payload, teamId, appId, channel, approvalKeyword }) {
+  if (!payload || payload.type !== "event_callback" || payload.team_id !== teamId || payload.api_app_id !== appId ||
+      typeof payload.event_id !== "string" || !payload.event_id) throw new Error("slack_context_mismatch");
+  const event = payload.event;
+  if (!event || event.type !== "message" || typeof event.user !== "string" || !event.user ||
+      event.channel !== channel || typeof event.thread_ts !== "string" || typeof event.ts !== "string" ||
+      typeof event.text !== "string" || event.subtype !== undefined || event.bot_id !== undefined ||
+      event.edited !== undefined || event.hidden === true) throw new Error("invalid_slack_decision_event");
+  const context = {
+    teamSha256: sha256(teamId), appSha256: sha256(appId),
+    channelSha256: sha256(event.channel), threadSha256: sha256(event.thread_ts),
+  };
+  const pending = store.findPendingBySlackContext(context);
+  if (event.text !== `${approvalKeyword} ${pending.nonce}`) throw new Error("approval_keyword_mismatch");
+  return {
+    requestId: pending.requestId,
+    event: {
+      principal: `slack:${event.user}`, team_sha256: context.teamSha256, app_sha256: context.appSha256,
+      channel_sha256: context.channelSha256, thread_sha256: context.threadSha256,
+      approval_event_id: payload.event_id, decision: "approve", nonce: pending.nonce,
+    },
+  };
+}
+
 export class IssuerStore {
   #db;
   constructor(path) {
@@ -42,6 +93,8 @@ export class IssuerStore {
         binding_sha256 TEXT NOT NULL,
         presentation_sha256 TEXT NOT NULL,
         expected_principal TEXT NOT NULL,
+        team_sha256 TEXT NOT NULL,
+        app_sha256 TEXT NOT NULL,
         channel_sha256 TEXT NOT NULL,
         thread_sha256 TEXT NOT NULL,
         nonce TEXT NOT NULL UNIQUE,
@@ -66,9 +119,11 @@ export class IssuerStore {
       );
     `);
   }
-  create({ requestId, nonce, binding, presentationSha256, expectedPrincipal, channelSha256, threadSha256, ttlSeconds, now }) {
+  create({ requestId, nonce, binding, presentationSha256, expectedPrincipal, teamSha256, appSha256, channelSha256, threadSha256, ttlSeconds, now }) {
     validateBinding(binding);
     hash(presentationSha256, "presentation_sha256");
+    hash(teamSha256, "team_sha256");
+    hash(appSha256, "app_sha256");
     hash(channelSha256, "channel_sha256");
     hash(threadSha256, "thread_sha256");
     bounded(expectedPrincipal, "expected_principal", 128);
@@ -83,10 +138,10 @@ export class IssuerStore {
     try {
       this.#db.prepare(`INSERT INTO approval_requests(
         request_id,binding_json,binding_sha256,presentation_sha256,expected_principal,
-        channel_sha256,thread_sha256,nonce,expires_at,state,created_at,updated_at
-      ) VALUES(?,?,?,?,?,?,?,?,?,'pending',?,?)`).run(
+        team_sha256,app_sha256,channel_sha256,thread_sha256,nonce,expires_at,state,created_at,updated_at
+      ) VALUES(?,?,?,?,?,?,?,?,?,?,?,'pending',?,?)`).run(
         requestId, bindingJson, bindingSha256, presentationSha256, expectedPrincipal,
-        channelSha256, threadSha256, nonce, expiresAt, createdAt, createdAt,
+        teamSha256, appSha256, channelSha256, threadSha256, nonce, expiresAt, createdAt, createdAt,
       );
       this.#audit(requestId, "created", createdAt, bindingSha256, null);
       this.#db.exec("COMMIT");
@@ -106,6 +161,8 @@ export class IssuerStore {
       bindingSha256: row.binding_sha256,
       presentationSha256: row.presentation_sha256,
       expectedPrincipal: row.expected_principal,
+      teamSha256: row.team_sha256,
+      appSha256: row.app_sha256,
       channelSha256: row.channel_sha256,
       threadSha256: row.thread_sha256,
       nonce: row.nonce,
@@ -116,11 +173,21 @@ export class IssuerStore {
       receipt: row.receipt_json ? JSON.parse(row.receipt_json) : undefined,
     };
   }
+  findPendingBySlackContext({ teamSha256, appSha256, channelSha256, threadSha256 }) {
+    const rows = this.#db.prepare(`SELECT request_id FROM approval_requests
+      WHERE team_sha256=? AND app_sha256=? AND channel_sha256=? AND thread_sha256=? AND state='pending'`).all(
+      teamSha256, appSha256, channelSha256, threadSha256,
+    );
+    if (rows.length !== 1) throw new Error(rows.length ? "ambiguous_slack_context" : "request_not_found");
+    return this.get(rows[0].request_id);
+  }
   approve(requestId, event, now) {
-    exact(event, ["principal", "channel_sha256", "thread_sha256", "approval_event_id", "decision", "nonce"], "approval_event");
+    exact(event, ["principal", "team_sha256", "app_sha256", "channel_sha256", "thread_sha256", "approval_event_id", "decision", "nonce"], "approval_event");
     const at = new Date(now).toISOString();
     const eventSha256 = sha256({
       principal: event.principal,
+      team_sha256: event.team_sha256,
+      app_sha256: event.app_sha256,
       channel_sha256: event.channel_sha256,
       thread_sha256: event.thread_sha256,
       approval_event_id: event.approval_event_id,
@@ -140,7 +207,8 @@ export class IssuerStore {
         this.#db.exec("COMMIT");
         throw new Error("request_expired");
       }
-      if (event.principal !== current.expectedPrincipal || event.channel_sha256 !== current.channelSha256 ||
+      if (event.principal !== current.expectedPrincipal || event.team_sha256 !== current.teamSha256 ||
+          event.app_sha256 !== current.appSha256 || event.channel_sha256 !== current.channelSha256 ||
           event.thread_sha256 !== current.threadSha256 || event.decision !== "approve" || event.nonce !== current.nonce)
         throw new Error("unauthorized_decision");
       bounded(event.approval_event_id, "approval_event_id", 256);
@@ -156,18 +224,26 @@ export class IssuerStore {
       throw error;
     }
   }
+  approvedWaiting() {
+    return this.#db.prepare("SELECT request_id FROM approval_requests WHERE state='approved_waiting_signature'").all()
+      .map((row) => row.request_id);
+  }
   storeReceipt(requestId, receipt, now) {
     const current = this.get(requestId);
-    if (!current || current.state !== "approved_waiting_signature") throw new Error("request_not_approved");
+    if (!current) throw new Error("request_not_approved");
+    if (current.receipt) return current;
+    if (current.state !== "approved_waiting_signature") throw new Error("request_not_approved");
     const at = new Date(now).toISOString();
     this.#db.exec("BEGIN IMMEDIATE");
     try {
-      this.#db.prepare("UPDATE approval_requests SET state='issued',receipt_json=?,updated_at=? WHERE request_id=? AND state='approved_waiting_signature'")
+      const update = this.#db.prepare("UPDATE approval_requests SET state='issued',receipt_json=?,updated_at=? WHERE request_id=? AND state='approved_waiting_signature'")
         .run(canonicalJson(receipt), at, requestId);
-      this.#audit(requestId, "issued", at, current.bindingSha256, sha256(current.approvalEventId));
+      if (update.changes === 1) this.#audit(requestId, "issued", at, current.bindingSha256, sha256(current.approvalEventId));
       this.#db.exec("COMMIT");
     } catch (error) { this.#db.exec("ROLLBACK"); throw error; }
-    return this.get(requestId);
+    const stored = this.get(requestId);
+    if (!stored?.receipt || canonicalJson(stored.receipt) !== canonicalJson(receipt)) throw new Error("receipt_store_conflict");
+    return stored;
   }
   cancel(requestId, now) {
     const at = new Date(now).toISOString();
@@ -199,8 +275,10 @@ export class SlackIssuer {
     this.now = now;
   }
   async create(request) {
-    exact(request, ["approval_binding", "evidence", "ttl_seconds"], "create_request");
-    const computed = bindingFromEvidence(request.evidence);
+    exact(request, ["approval_binding", "attestation_bundle", "ttl_seconds"], "create_request");
+    const validated = validateAttestationBundle(request.attestation_bundle, { now: this.now() });
+    const evidence = validated.evidence;
+    const computed = bindingFromEvidence(evidence);
     if (canonicalJson(computed) !== canonicalJson(validateBinding(request.approval_binding)))
       throw new Error("presentation_binding_mismatch");
     if (!this.presenter || typeof this.presenter.post !== "function") throw new Error("presenter_unavailable");
@@ -210,14 +288,17 @@ export class SlackIssuer {
     const requestId = `sha256:${randomBytes(32).toString("hex")}`;
     const nonce = randomBytes(24).toString("base64url");
     const expiresAt = new Date(now + request.ttl_seconds * 1000).toISOString();
-    const context = await this.presenter.post({ requestId, nonce, expiresAt, evidence: request.evidence, binding: computed });
-    exact(context, ["channel", "thread"], "presented_context");
+    const presentation = buildApprovalPresentation(evidence, computed);
+    const context = await this.presenter.post({ requestId, nonce, expiresAt, evidence, binding: computed, presentation, screenshots: validated.screenshots });
+    exact(context, ["team", "app", "channel", "thread"], "presented_context");
     return this.store.create({
       requestId,
       nonce,
       binding: computed,
-      presentationSha256: sha256(request.evidence),
+      presentationSha256: sha256(presentation),
       expectedPrincipal: this.expectedPrincipal,
+      teamSha256: sha256(bounded(context.team, "presented_team", 128)),
+      appSha256: sha256(bounded(context.app, "presented_app", 128)),
       channelSha256: sha256(bounded(context.channel, "presented_channel", 128)),
       threadSha256: sha256(bounded(context.thread, "presented_thread", 128)),
       ttlSeconds: request.ttl_seconds,
@@ -234,8 +315,12 @@ export class SlackIssuer {
     if (!record) throw new Error("request_not_found");
     return { request_id: requestId, state: record.state, expires_at: record.expiresAt, receipt: record.receipt };
   }
-  async approve(requestId, event) {
-    let record = this.store.approve(requestId, event, this.now());
+  recordDecision(requestId, event) {
+    return this.store.approve(requestId, event, this.now());
+  }
+  async completeApproved(requestId) {
+    let record = this.store.get(requestId);
+    if (!record || !["approved_waiting_signature", "issued"].includes(record.state)) throw new Error("request_not_approved");
     if (record.receipt) return record.receipt;
     const decision = {
       request_id: record.requestId,
@@ -250,6 +335,14 @@ export class SlackIssuer {
     const receipt = await this.signer.issue({ ...decision, decision_digest: sha256(decision) });
     record = this.store.storeReceipt(requestId, receipt, this.now());
     return record.receipt;
+  }
+  async approve(requestId, event) {
+    const record = this.recordDecision(requestId, event);
+    if (record.receipt) return record.receipt;
+    return await this.completeApproved(requestId);
+  }
+  async recoverApproved() {
+    for (const requestId of this.store.approvedWaiting()) await this.completeApproved(requestId);
   }
   cancel(requestId) { return this.store.cancel(requestId, this.now()); }
 }

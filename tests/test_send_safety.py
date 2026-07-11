@@ -59,15 +59,12 @@ def _observed(state=lifecycle.ACTIVE, *, draft=None):
         (lifecycle.INCONSISTENT, "LIFECYCLE_INCONSISTENT"),
     ],
 )
-def test_validate_and_execute_block_non_active_lifecycle_before_transport(state, code):
+def test_validate_blocks_non_active_lifecycle_before_transport(state, code):
     with patch("superhuman_mail.send.lifecycle.observe", return_value=_observed(state)):
         with patch("superhuman_mail.send.urllib.request.urlopen") as urlopen:
             validated = send.validate(THREAD, DRAFT, account=ACCOUNT["email"])
-            executed = send.execute(THREAD, DRAFT, account=ACCOUNT["email"])
     assert validated["status"] == "failed"
     assert validated["errors"][0]["code"] == code
-    assert executed["status"] == "failed"
-    assert executed["errors"][0]["code"] == code
     urlopen.assert_not_called()
 
 
@@ -80,10 +77,10 @@ def test_validate_and_execute_block_non_active_lifecycle_before_transport(state,
         (_draft(**{"from": {"email": "wrong@example.test"}}), "FROM_ACCOUNT_MISMATCH"),
     ],
 )
-def test_invalid_envelope_or_content_is_blocked_inside_execute(draft, code):
+def test_invalid_envelope_or_content_is_blocked_by_preflight(draft, code):
     with patch("superhuman_mail.send.lifecycle.observe", return_value=_observed(draft=draft)):
         with patch("superhuman_mail.send.urllib.request.urlopen") as urlopen:
-            result = send.execute(THREAD, DRAFT, account=ACCOUNT["email"])
+            result = send.validate(THREAD, DRAFT, account=ACCOUNT["email"])
     assert result["status"] == "failed"
     assert result["errors"][0]["code"] == code
     urlopen.assert_not_called()
@@ -92,7 +89,7 @@ def test_invalid_envelope_or_content_is_blocked_inside_execute(draft, code):
 def test_empty_subject_requires_explicit_exact_attestation_policy():
     with patch("superhuman_mail.send.lifecycle.observe", return_value=_observed(draft=_draft(subject=""))):
         validated = send.validate(THREAD, DRAFT, account=ACCOUNT["email"])
-        executed = send.execute(THREAD, DRAFT, account=ACCOUNT["email"])
+    executed = send.execute(THREAD, DRAFT, account=ACCOUNT["email"])
     assert validated["errors"][0]["code"] == "SUBJECT_REQUIRED"
     assert executed["errors"][0]["code"] == "ATTESTATION_REQUIRED"
 

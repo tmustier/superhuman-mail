@@ -5,6 +5,7 @@ private let binaryDirectory = URL(fileURLWithPath: CommandLine.arguments[0]).res
 private let shmPath = binaryDirectory.appendingPathComponent("shm").path
 private let configPath = "/Library/Application Support/superhuman-mail/send-executor/provider-config.json"
 private let statePath = "/Library/Application Support/superhuman-mail/send-executor/state"
+private let importsPath = statePath + "/imports"
 private let service = "org.superhuman-mail.send-executor.provider-token"
 private let account = "provider"
 
@@ -45,6 +46,7 @@ private func run(_ arguments: [String]) -> Never {
         "PATH": "/usr/bin:/bin",
         "SUPERHUMAN_MAIL_CONFIG": configPath,
         "SHM_STATE_DIR": statePath,
+        "SHM_EXECUTOR_IMPORTS_DIR": importsPath,
         "SHM_AUTH_TOKEN_STDIN": "1",
     ]
     process.standardInput = pipe
@@ -60,7 +62,6 @@ private func run(_ arguments: [String]) -> Never {
     exit(process.terminationStatus)
 }
 
-guard geteuid() == 0 else { fail("root_required") }
 let args = Array(CommandLine.arguments.dropFirst())
 guard let operation = args.first else { fail("invalid_operation") }
 switch operation {

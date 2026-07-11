@@ -59,7 +59,7 @@ Use this workflow every time:
 6. show the complete intended message to the user through the trusted approval broker
 7. obtain its short-lived Ed25519 receipt bound to the exact `approval_binding`
 8. verify it with `shm approval verify RECEIPT --attestation ID`
-9. let the trusted executor run the outbound gate/grace period and `shm send --confirm ... --approval-receipt RECEIPT`; then wait for `sent_provider_confirmed`
+9. let the trusted executor run the outbound gate/grace period and `shm send --confirm ... --approval-receipt RECEIPT`; require its `state: provider_confirmed`
 
 Never treat draft timestamps, labels, HTTP acceptance, `sent_backend_confirmed`, or exit `4` as a completed send. Never create CRM/follow-up work until `provider_confirmed: true`. Caller-supplied `--approval-ref` never authorizes. Until a trusted issuer root and credential-isolated executor are deployed, confirm must fail closed and unattended agents must not have Superhuman transport credentials. `shm draft get` and conditional `shm draft send` are signed credential-bridge internals, not agent-callable fallback commands.
 

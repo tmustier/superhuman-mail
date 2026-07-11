@@ -306,22 +306,19 @@ def show_safe(
 ) -> dict[str, Any]:
     """Return content-free typed verification and replay-consumption state."""
     from . import attestation as _attestation
-    from .attempts import AttemptJournal
-
     attestation = _attestation.load(attestation_reference)
     _attestation.verify(attestation)
     receipt = load(reference)
     verified = verify(receipt, attestation=attestation, require_unexpired=False)
-    active_journal = journal if journal is not None else AttemptJournal()
-    consumption = active_journal.get_receipt_consumption(verified["receipt_id"])
+    del journal
     return {
         "authority": AUTHORITY,
         "verified": True,
-        "usable": not verified["expired"] and consumption is None,
+        "usable_for_executor_submission": not verified["expired"],
         "unattended_send_eligible": False,
         "trusted_executor_required": True,
         "expired": verified["expired"],
-        "consumed": consumption is not None,
+        "consumption_state": "query_canonical_executor",
         "receipt_id": verified["receipt_id"],
         "receipt_digest": verified["receipt_digest"],
         "issuer": verified["issuer"],

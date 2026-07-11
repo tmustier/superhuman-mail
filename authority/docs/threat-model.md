@@ -15,7 +15,7 @@ Assume the unattended worker controls API arguments, files in its workspace, env
 
 ## Fail-closed controls
 
-Strict schemas reject extra fields. The flat receipt binds account, account email, thread, draft, attestation, outgoing fingerprint/payload, recipient envelope, renderer, screenshots, send identity, delay, and schedule by content hash. Issuance requires authenticated Slack request signing plus policy principal/context. The signer exposes a semantic receipt operation, not `sign(bytes)`. The executor independently verifies signature/binding, starts durable grace, rerenders twice, atomically claims once, and uses conditional revision/fingerprint send. Unknown transport outcomes remain unknown permanently.
+Strict schemas reject extra fields. The flat receipt binds account, account email, thread, draft, portable attestation, outgoing fingerprint/payload, recipient envelope, renderer, screenshots, send identity, delay, and schedule by content hash. Issuance uses app-token-authenticated Slack Socket Mode, fixed team/app/channel/thread policy, immutable event IDs, and one configured principal; a valid decision is durably recorded before acknowledgement. The signer exposes a semantic receipt operation, not `sign(bytes)`. The executor independently verifies and imports receipt-bound evidence, starts durable grace, rerenders twice, atomically claims once in the only consumption journal, and uses conditional revision/fingerprint send. Unknown transport outcomes remain unknown permanently.
 
 ## Residual risks
 

@@ -36,6 +36,6 @@ const server = createServer((req, res) => {
 server.headersTimeout = 5_000;
 server.requestTimeout = 5_000;
 server.listen(socket, () => {
-  chownSync(socket, 0, callerGid);
+  chownSync(socket, process.getuid(), callerGid);
   chmodSync(socket, 0o660);
 });

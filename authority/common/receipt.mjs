@@ -146,7 +146,10 @@ export function issueReceipt({ issuer, keyId, privateKeyPem, issuedAt, expiresAt
 export function verifyReceipt(receipt, { trust, expectedBinding, now = Date.now() }) {
   validateReceipt(receipt);
   validLifetime(receipt.issued_at, receipt.expires_at, now);
-  if (!trust || receipt.issuer !== trust.issuer || receipt.key_id !== trust.keyId) throw new Error("untrusted_issuer");
+  const roots = Array.isArray(trust) ? trust : [trust];
+  const selected = roots.find((candidate) => candidate && receipt.issuer === candidate.issuer && receipt.key_id === candidate.keyId);
+  if (!selected) throw new Error("untrusted_issuer");
+  trust = selected;
   if (!Array.isArray(trust.allowedApprovers) || !trust.allowedApprovers.includes(receipt.approver.principal))
     throw new Error("unauthorized_approver");
   if (expectedBinding && canonicalJson(receipt.binding) !== canonicalJson(validateBinding(expectedBinding)))

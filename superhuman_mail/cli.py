@@ -384,7 +384,7 @@ SCHEMA: dict[str, dict[str, Any]] = {
         "examples": ["shm executor-contract"],
     },
     "approval.verify": {
-        "description": "Verify an externally signed exact-send receipt and replay state",
+        "description": "Verify an externally signed exact-send receipt; consumption state lives in the executor",
         "args": {
             "reference": {"required": True, "type": "string"},
             "--attestation": {"required": True, "type": "string"},
@@ -833,6 +833,9 @@ def _typed_send_exit(data: dict[str, Any]) -> int:
         "send_requested",
         "send_pending_undo",
         "sent_backend_confirmed",
+        "grace",
+        "claimed",
+        "accepted",
         "inconsistent",
         "unknown",
     }:

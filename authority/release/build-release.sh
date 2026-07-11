@@ -6,6 +6,9 @@ if [[ $# -ne 6 ]]; then
 fi
 NODE=$(realpath "$1"); SHM=$(realpath "$2"); OUT=$(python3 -c 'import os,sys; print(os.path.abspath(sys.argv[1]))' "$3")
 ISSUER_ID=$4; SIGNER_ID=$5; EXECUTOR_ID=$6
+[[ "$ISSUER_ID" != "$SIGNER_ID" && "$ISSUER_ID" != "$EXECUTOR_ID" && "$SIGNER_ID" != "$EXECUTOR_ID" ]] || {
+  echo "issuer, signer, and executor signing identities must be distinct" >&2; exit 2;
+}
 AUTHORITY=$(cd "$(dirname "$0")/.." && pwd)
 REPO=$(cd "$AUTHORITY/.." && pwd)
 [[ $(uname -s) == Darwin ]] || { echo "macOS required" >&2; exit 2; }
@@ -35,6 +38,7 @@ make_info() {
 </dict></plist>
 PLIST
   cp "$AUTHORITY/common/receipt.mjs" "$app/Contents/Resources/common/receipt.mjs"
+  cp "$AUTHORITY/common/attestation.mjs" "$app/Contents/Resources/common/attestation.mjs"
   cp "$NODE" "$app/Contents/MacOS/node"
 }
 ISSUER_APP="$OUT/stage/slack-issuer.app"; SIGNER_APP="$OUT/stage/approval-signer.app"; EXECUTOR_APP="$OUT/stage/send-executor.app"

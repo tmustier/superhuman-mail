@@ -14,7 +14,7 @@ The unattended worker is untrusted. It may choose CLI arguments, environment var
 - a local/raw transport fallback that bypasses receipt verification;
 - an API that signs caller-provided bytes.
 
-The issuer, signer, and executor source live under this repository's `authority/` tree and ship as separately signed artifacts under distinct hardened principals and ACLs. Core `superhuman-mail` contains verification and atomic consumption. Until a trust root is release-pinned or installed as a root-owned non-writable system file, `shm send --confirm` fails with `APPROVAL_TRUST_UNAVAILABLE`.
+The issuer, signer, and executor source live under this repository's `authority/` tree and ship as separately signed artifacts under distinct hardened principals and ACLs. Core `superhuman-mail` contains read-only verification plus a thin client; atomic consumption exists only in the executor journal. Until a trust root is release-pinned or installed as a root-owned non-writable system file, `shm send --confirm` fails with `APPROVAL_TRUST_UNAVAILABLE`.
 
 A signed receipt is necessary but not sufficient if the worker retains raw Superhuman credentials. Production must run receipt verification, atomic consumption, and transport in a broker-owned/root-owned or remote trusted executor. The worker may submit a request to that executor but cannot patch it or extract its credentials.
 
@@ -28,11 +28,7 @@ The trusted broker exposes semantic operations only:
 
 It never exposes `sign(bytes)`, private-key export, arbitrary approver selection, or caller-controlled trust-root configuration.
 
-`approval.create` accepts the content-free `approval_binding` plus the complete private attestation evidence returned by:
-
-```bash
-shm attestation show ID_OR_PATH --account EMAIL --thread-id THREAD --draft-id DRAFT
-```
+`approval.create` accepts the content-free `approval_binding` plus an inline private `attestation_bundle`: the complete attestation record and ordered `{sha256, media_type, data_base64}` PNG artifacts. `shm attestation show` remains deliberately content-free and is not the broker input. Local paths are presentation metadata only and never cross the executor API as authority.
 
 The binding covers:
 
@@ -45,11 +41,11 @@ The binding covers:
 - reserved send-identity hash;
 - delay and scheduled-send hash.
 
-The issuer independently recomputes the binding from that evidence, posts the complete intended recipients, subject, body/render, attachments, and scheduling behavior to its fixed policy channel, then records the request, random nonce, ≤5-minute expiry, configured Slack principal, presentation digest, and returned channel/thread atomically. Evidence that does not reproduce the requested binding fails before presentation; caller labels or summaries are not authoritative.
+The issuer independently verifies the portable attestation ID and screenshot bytes, recomputes the binding, posts an exhaustive representation of every reviewed outgoing field, and uploads every attested render screenshot to its fixed policy channel. It then records the request, random nonce, ≤5-minute expiry, configured Slack principal, presentation digest, and returned team/app/channel/thread hashes. Evidence that does not reproduce the requested binding fails before presentation; caller labels or summaries are not authoritative.
 
 ## Authenticated decision
 
-The issuer directly consumes an authenticated Slack event from the policy-configured approver tied to one pending request. It must verify workspace, channel/thread, Slack event/message ID, principal, exact approval keyword, pending state, nonce, and expiry. It then atomically changes `pending -> approved` once and signs only the server-constructed receipt.
+The issuer directly consumes Slack Socket Mode from its app-token-authenticated WebSocket. It validates configured team ID, app ID, channel/thread, an ordinary unedited human message, immutable Events API `event_id`, principal, exact approval keyword, pending state, nonce, and expiry. The fixed `(team, app, channel, thread)` context resolves the pending request; no HTTP path or proxy selects a request ID. It durably changes `pending -> approved_waiting_signature` before acknowledging the Socket Mode envelope, then signs only the server-constructed receipt. Startup recovery resumes any committed unsigned decision.
 
 Rejections, cancellations, duplicate decisions, late events, edited/deleted approval messages, or events from another principal never produce a receipt. The durable broker state owns TTL, nonce, decision, and audit history.
 
@@ -95,14 +91,9 @@ shm send --confirm THREAD DRAFT \
   --wait 120
 ```
 
-Core verifies schema, canonical ID, pinned issuer/key, Ed25519 signature, authorized approver, not-before/expiry/max TTL, action/provider, and byte-exact attestation binding. It performs the mandatory second renderer probe. Only then does one SQLite `BEGIN IMMEDIATE` transaction:
+Agent-facing core verifies the local attestation and receipt, sends an inline bundle to the fixed executor Unix socket, then requests execution by canonical attestation ID. The executor re-verifies the receipt/binding, imports screenshot bytes into executor-owned content-addressed storage, and performs the mandatory renderer probe. Its one canonical SQLite journal starts the 60-second abort grace and later uses `BEGIN IMMEDIATE` to recheck expiry and atomically move `grace -> claimed` once. There is no local receipt-consumption journal or desktop transport in `shm send --confirm`.
 
-1. recheck receipt expiry;
-2. reject a previously consumed receipt ID;
-3. insert the immutable receipt-consumption row;
-4. change the exact attempt from `prepared/post_count=0` to `posting/post_count=1`.
-
-A crash cannot commit receipt consumption without the POST claim or vice versa. After the claim, retry is reconciliation-only. Receipt consumption is retained even when old terminal attempts are purged.
+A crash cannot create a second claim. After `claimed`, retry is reconciliation-only; interrupted claims become permanently `unknown`. Definitive pre-claim failures become durable `failed` or `expired` rows.
 
 ## Typed result contract
 

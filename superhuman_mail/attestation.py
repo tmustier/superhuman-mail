@@ -8,6 +8,7 @@ import hmac
 import json
 import os
 import secrets
+import stat
 import subprocess
 import urllib.request
 from datetime import datetime, timedelta, timezone
@@ -23,6 +24,12 @@ ADAPTER_VERSION = "superhuman-cdp-v1"
 DEFAULT_TTL_SECONDS = 15 * 60
 DEFAULT_CDP_URL = "http://127.0.0.1:9222"
 DEFAULT_ALLOWED_RENDERER_BUILDS = {("1041.0.15", "2026-07-09T19:06:39Z")}
+OUTGOING_FIELDS = frozenset({
+    "headers", "superhuman_id", "rfc822_id", "thread_id", "message_id",
+    "in_reply_to", "from", "to", "cc", "bcc", "subject", "html_body",
+    "attachments", "scheduled_for", "abort_on_reply", "current_message_ids",
+    "mail_merge_recipients", "sensitivity_label_id", "sensitivity_tenant_id",
+})
 _ATTACHMENT_HOST_SUFFIXES = (
     ".googleapis.com",
     ".googleusercontent.com",
@@ -324,12 +331,29 @@ def _unsigned(record: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def identity_content(record: dict[str, Any]) -> dict[str, Any]:
+    """Portable attestation identity; local screenshot paths are not authority."""
+    unsigned = _unsigned(record)
+    screenshots = unsigned.get("screenshots")
+    if isinstance(screenshots, list):
+        unsigned = {
+            **unsigned,
+            "screenshots": [
+                {"sha256": item.get("sha256")}
+                if isinstance(item, dict)
+                else item
+                for item in screenshots
+            ],
+        }
+    return unsigned
+
+
 def _seal(record: dict[str, Any]) -> dict[str, Any]:
     unsigned = _unsigned(record)
-    attestation_id = hashlib.sha256(canonical_bytes(unsigned)).hexdigest()
-    with_id = {**unsigned, "attestation_id": attestation_id}
-    signature = hmac.new(_attestation_key(create=True), canonical_bytes(with_id), hashlib.sha256).hexdigest()
-    return {**with_id, "signature": f"hmac-sha256:{signature}"}
+    attestation_id = sha256(canonical_bytes(identity_content(unsigned)))
+    signature_content = {**identity_content(unsigned), "attestation_id": attestation_id}
+    signature = hmac.new(_attestation_key(create=True), canonical_bytes(signature_content), hashlib.sha256).hexdigest()
+    return {**unsigned, "attestation_id": attestation_id, "signature": f"hmac-sha256:{signature}"}
 
 
 def _validate_record_structure(record: dict[str, Any]) -> None:
@@ -359,25 +383,24 @@ def _validate_record_structure(record: dict[str, Any]) -> None:
         raise AttestationError("ATTESTATION_INVALID", "Attestation screenshots are malformed")
     if not isinstance(record.get("send_eligible"), bool):
         raise AttestationError("ATTESTATION_INVALID", "Attestation eligibility is malformed")
+    attestation_id = str(record.get("attestation_id") or "")
+    if len(attestation_id) != 71 or not attestation_id.startswith("sha256:") or any(
+        character not in "0123456789abcdef" for character in attestation_id[7:]
+    ):
+        raise AttestationError("ATTESTATION_INVALID", "Attestation ID is malformed")
+    if set(record["outgoing_payload"]) != OUTGOING_FIELDS:
+        raise AttestationError("ATTESTATION_INVALID", "Outgoing payload fields do not match the renderer contract")
     try:
         _parse_iso(record["expires_at"])
     except (TypeError, ValueError) as exc:
         raise AttestationError("ATTESTATION_INVALID", "Attestation expiry is malformed") from exc
 
 
-def verify(record: dict[str, Any], *, require_unexpired: bool = True) -> None:
+def _verify_content_and_artifacts(record: dict[str, Any], *, require_unexpired: bool) -> None:
     _validate_record_structure(record)
-    expected_id = hashlib.sha256(canonical_bytes(_unsigned(record))).hexdigest()
+    expected_id = sha256(canonical_bytes(identity_content(record)))
     if not hmac.compare_digest(str(record.get("attestation_id") or ""), expected_id):
         raise AttestationError("ATTESTATION_TAMPERED", "Attestation ID does not match its canonical content")
-    signature = str(record.get("signature") or "")
-    expected_signature = "hmac-sha256:" + hmac.new(
-        _attestation_key(create=False),
-        canonical_bytes({**_unsigned(record), "attestation_id": expected_id}),
-        hashlib.sha256,
-    ).hexdigest()
-    if not hmac.compare_digest(signature, expected_signature):
-        raise AttestationError("ATTESTATION_TAMPERED", "Attestation signature is invalid")
     for screenshot in record.get("screenshots") or []:
         path = Path(str(screenshot.get("path") or ""))
         expected_hash = str(screenshot.get("sha256") or "")
@@ -390,6 +413,56 @@ def verify(record: dict[str, Any], *, require_unexpired: bool = True) -> None:
         raise AttestationError("ATTESTATION_EXPIRED", "Render attestation has expired; preview and approve again")
     if not record.get("send_eligible"):
         raise AttestationError("ATTESTATION_NOT_SEND_ELIGIBLE", "Attestation was not marked send-eligible")
+
+
+def verify(record: dict[str, Any], *, require_unexpired: bool = True) -> None:
+    _verify_content_and_artifacts(record, require_unexpired=require_unexpired)
+    expected_id = str(record["attestation_id"])
+    signature = str(record.get("signature") or "")
+    expected_signature = "hmac-sha256:" + hmac.new(
+        _attestation_key(create=False),
+        canonical_bytes({**identity_content(record), "attestation_id": expected_id}),
+        hashlib.sha256,
+    ).hexdigest()
+    if not hmac.compare_digest(signature, expected_signature):
+        raise AttestationError("ATTESTATION_TAMPERED", "Attestation signature is invalid")
+
+
+def verify_imported(record: dict[str, Any], *, import_root: Path, require_unexpired: bool = True) -> None:
+    """Verify a receipt-authorized copy inside executor-owned storage.
+
+    The issuer receipt authenticates the portable identity. This check never
+    treats a caller path or the creating user's local HMAC as executor trust.
+    """
+    expected_dir = import_root.resolve() / str(record.get("attestation_id", "")).removeprefix("sha256:")
+    try:
+        expected_dir = expected_dir.resolve(strict=True)
+        root = import_root.resolve(strict=True)
+    except OSError as exc:
+        raise AttestationError("ATTESTATION_IMPORT_INVALID", "Executor attestation import is unavailable") from exc
+    if expected_dir.parent != root:
+        raise AttestationError("ATTESTATION_IMPORT_INVALID", "Executor attestation import escaped its fixed root")
+    screenshots_dir = expected_dir / "screenshots"
+    for path in [root, expected_dir, screenshots_dir]:
+        metadata = path.stat()
+        if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.geteuid() or metadata.st_mode & 0o022:
+            raise AttestationError("ATTESTATION_IMPORT_UNSAFE", "Executor import storage ownership or mode is unsafe")
+    record_path = expected_dir / "attestation.json"
+    record_metadata = record_path.lstat()
+    if not stat.S_ISREG(record_metadata.st_mode) or record_metadata.st_uid != os.geteuid() or record_metadata.st_mode & 0o077:
+        raise AttestationError("ATTESTATION_IMPORT_UNSAFE", "Imported attestation ownership or mode is unsafe")
+    for screenshot in record.get("screenshots") or []:
+        path = Path(str(screenshot.get("path") or ""))
+        try:
+            resolved = path.resolve(strict=True)
+        except OSError as exc:
+            raise AttestationError("ATTESTATION_ARTIFACT_MISMATCH", "Imported screenshot is unavailable") from exc
+        if resolved.parent != expected_dir / "screenshots":
+            raise AttestationError("ATTESTATION_IMPORT_INVALID", "Imported screenshot path is outside its sealed directory")
+        metadata = resolved.stat()
+        if metadata.st_uid != os.geteuid() or metadata.st_mode & 0o077:
+            raise AttestationError("ATTESTATION_IMPORT_UNSAFE", "Imported screenshot ownership or mode is unsafe")
+    _verify_content_and_artifacts(record, require_unexpired=require_unexpired)
 
 
 def _artifact_dir() -> Path:
@@ -537,6 +610,8 @@ def _validate_probe(
     payload = result.get("outgoing_payload")
     if not isinstance(payload, dict):
         raise AttestationError("RENDERER_FAILED", "Renderer did not return OutgoingMessage.toJsonRequest()")
+    if set(payload) != OUTGOING_FIELDS:
+        raise AttestationError("RENDERER_PAYLOAD_SCHEMA_MISMATCH", "Renderer payload fields differ from the reviewed exhaustive contract")
     if str(payload.get("superhuman_id") or "") != sid:
         raise AttestationError("RENDERER_IDENTITY_MISMATCH", "Renderer did not reuse the reserved Superhuman identity")
     if str(payload.get("thread_id") or "") != thread_id or str(payload.get("message_id") or "") != draft_id:

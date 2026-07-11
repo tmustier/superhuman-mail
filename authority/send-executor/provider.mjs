@@ -28,7 +28,7 @@ async function runBridge(args, timeout) {
 export class NativeProvider {
   async render(execution) {
     const data = await runBridge([
-      "render", execution.account, execution.threadId, execution.draftId, execution.attestationReference,
+      "render", execution.account, execution.threadId, execution.draftId, execution.attestationId,
     ], 60_000);
     return {
       revision_id: data.revision_id,
@@ -38,7 +38,7 @@ export class NativeProvider {
   }
   async send(execution, condition) {
     return await runBridge([
-      "send", execution.account, execution.threadId, execution.draftId, execution.attestationReference,
+      "send", execution.account, execution.threadId, execution.draftId, execution.attestationId,
       condition.revisionId, condition.draftFingerprint, String(condition.delaySeconds),
     ], 180_000);
   }

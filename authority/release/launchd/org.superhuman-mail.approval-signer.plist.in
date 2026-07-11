@@ -4,7 +4,7 @@
   <key>Label</key><string>org.superhuman-mail.approval-signer</string>
   <key>ProgramArguments</key><array><string>@RELEASE_ROOT@/approval-signer.app/Contents/MacOS/launch</string></array>
   <key>UserName</key><string>@SIGNER_USER@</string>
-  <key>GroupName</key><string>@SIGNER_GROUP@</string>
+  <key>GroupName</key><string>@SIGNER_SOCKET_PEER_GROUP@</string>
   <key>EnvironmentVariables</key><dict>
     <key>SHM_SIGNER_SOCKET</key><string>@SIGNER_SOCKET@</string>
     <key>SHM_SIGNER_ISSUER</key><string>@ISSUER_NAME@</string>

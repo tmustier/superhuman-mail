@@ -3,7 +3,8 @@ import { DatabaseSync } from "node:sqlite";
 import { canonicalJson, sha256, verifyReceipt } from "../common/receipt.mjs";
 
 export const MIN_GRACE_MS = 60_000;
-const STATES = ["grace", "claimed", "accepted", "provider_confirmed", "failed", "unknown", "aborted"];
+const STATES = ["grace", "claimed", "accepted", "provider_confirmed", "failed", "expired", "unknown", "aborted"];
+const CLAIM_MARGIN_MS = 5_000;
 function exact(value, fields, label) {
   if (!value || Array.isArray(value) || typeof value !== "object") throw new Error(`invalid_${label}`);
   const actual = Object.keys(value).sort();
@@ -17,14 +18,14 @@ function bounded(value, label, max = 512) {
 }
 export function parseExecuteRequest(value) {
   exact(value, ["receipt", "execution"], "request");
-  exact(value.execution, ["account", "thread_id", "draft_id", "attestation_reference"], "execution");
+  exact(value.execution, ["account", "thread_id", "draft_id", "attestation_id"], "execution");
   return {
     receipt: value.receipt,
     execution: {
       account: bounded(value.execution.account, "account", 320),
       threadId: bounded(value.execution.thread_id, "thread_id", 256),
       draftId: bounded(value.execution.draft_id, "draft_id", 256),
-      attestationReference: bounded(value.execution.attestation_reference, "attestation_reference", 512),
+      attestationId: bounded(value.execution.attestation_id, "attestation_id", 71),
     },
   };
 }
@@ -118,6 +119,16 @@ export class ExecutorJournal {
     if (update.changes !== 1 && status.state !== "aborted") throw new Error("execution_not_abortable");
     return status;
   }
+  failGrace(receiptId, state, nowMs, errorCode) {
+    if (!["failed", "expired"].includes(state)) throw new Error("invalid_grace_failure_state");
+    const at = new Date(nowMs).toISOString();
+    const update = this.#db.prepare("UPDATE executions SET state=?,updated_at=?,error_code=? WHERE receipt_id=? AND state='grace'")
+      .run(state, at, errorCode, receiptId);
+    const status = this.entry(receiptId);
+    if (!status) throw new Error("execution_not_found");
+    if (update.changes !== 1 && status.state !== state) throw new Error("invalid_execution_transition");
+    return status;
+  }
   finish(receiptId, state, nowMs, { providerMessageId, errorCode } = {}) {
     if (!["accepted", "provider_confirmed", "failed", "unknown"].includes(state)) throw new Error("invalid_finish_state");
     const at = new Date(nowMs).toISOString();
@@ -163,8 +174,10 @@ export class SendExecutor {
     if (sha256(execution.account.toLowerCase()) !== receipt.binding.account_email_sha256 ||
         sha256(execution.threadId) !== receipt.binding.thread_id_sha256 ||
         sha256(execution.draftId) !== receipt.binding.draft_id_sha256 ||
-        execution.attestationReference !== receipt.binding.attestation_id)
+        execution.attestationId !== receipt.binding.attestation_id)
       throw new Error("execution_binding_mismatch");
+    if (Date.parse(verified.expiresAt) < this.now() + MIN_GRACE_MS + CLAIM_MARGIN_MS)
+      throw new Error("receipt_lifetime_insufficient_for_grace");
     const rendered = await this.provider.render(execution);
     exact(rendered, ["revision_id", "draft_fingerprint", "approval_binding"], "rendered_draft");
     if (canonicalJson(rendered.approval_binding) !== canonicalJson(receipt.binding) ||
@@ -173,7 +186,7 @@ export class SendExecutor {
     const receiptHash = sha256(receipt);
     const executionHash = sha256({
       account: execution.account.toLowerCase(), thread_id: execution.threadId,
-      draft_id: execution.draftId, attestation_reference: execution.attestationReference,
+      draft_id: execution.draftId, attestation_id: execution.attestationId,
     });
     let status = this.journal.start({
       receiptId: verified.receiptId, receiptHash, executionHash, bindingHash: sha256(receipt.binding),
@@ -185,11 +198,24 @@ export class SendExecutor {
       status = this.journal.entry(verified.receiptId);
       if (!status || status.state !== "grace") return status;
     }
-    const fresh = await this.provider.render(execution);
-    if (fresh.revision_id !== status.revisionId || fresh.draft_fingerprint !== receipt.binding.outgoing_fingerprint ||
-        canonicalJson(fresh.approval_binding) !== canonicalJson(receipt.binding))
-      throw new DefinitivePrePostRejection("draft_changed_during_grace");
-    const claim = this.journal.claim(verified.receiptId, this.now());
+    let fresh;
+    try {
+      fresh = await this.provider.render(execution);
+      if (fresh.revision_id !== status.revisionId || fresh.draft_fingerprint !== receipt.binding.outgoing_fingerprint ||
+          canonicalJson(fresh.approval_binding) !== canonicalJson(receipt.binding))
+        throw new DefinitivePrePostRejection("draft_changed_during_grace");
+    } catch (error) {
+      const code = error instanceof DefinitivePrePostRejection ? error.code : "rerender_failed_before_claim";
+      return this.journal.failGrace(verified.receiptId, "failed", this.now(), code);
+    }
+    let claim;
+    try {
+      claim = this.journal.claim(verified.receiptId, this.now());
+    } catch (error) {
+      if (error instanceof Error && error.message === "receipt_expired_before_claim")
+        return this.journal.failGrace(verified.receiptId, "expired", this.now(), "receipt_expired_before_claim");
+      throw error;
+    }
     if (!claim.claimed) return claim.status;
     try {
       const result = await this.provider.send(execution, {
