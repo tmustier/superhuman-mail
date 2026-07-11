@@ -279,6 +279,13 @@ def test_safe_show_reports_valid_but_expired_as_unusable(tmp_path):
     assert summary["usable"] is False
 
 
+@pytest.mark.parametrize("value", [2**53, float("nan"), float("inf")])
+def test_nonportable_numeric_identity_values_fail_before_sealing(value):
+    with pytest.raises(attestation.AttestationError) as caught:
+        attestation._seal({"signature_settings": {"value": value}, "screenshots": []})
+    assert caught.value.code == "ATTESTATION_NONPORTABLE"
+
+
 def test_malformed_attestation_returns_typed_invalid_error():
     with pytest.raises(attestation.AttestationError) as caught:
         attestation.verify({})

@@ -232,6 +232,11 @@ test("trusted preparer bundle carries raw Python-compatible identity bytes and r
   assert.equal(validated.record.attestation_id, bundle.record.attestation_id);
   assert.deepEqual(validated.screenshots.map((item) => item.role), ["compose", "outgoing"]);
   assert.throws(() => validateAttestationBundle({ ...bundle, screenshots: [] }), /screenshot_set_mismatch/);
+  assert.throws(() => validateAttestationBundle({ ...bundle, identity_base64: Buffer.from("{}").toString("base64") }), /attestation_id_mismatch/);
+  const reordered = { ...bundle, screenshots: [...bundle.screenshots].reverse() };
+  assert.throws(() => validateAttestationBundle(reordered), /screenshot_role_mismatch/);
+  const corrupted = structuredClone(bundle); corrupted.screenshots[0].data_base64 = Buffer.from("not png").toString("base64");
+  assert.throws(() => validateAttestationBundle(corrupted), /screenshot_digest_mismatch|invalid_screenshot_png/);
 });
 
 test("Python raw identity bytes remain valid across floats and non-BMP keys", () => {
