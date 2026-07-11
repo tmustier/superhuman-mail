@@ -1,6 +1,6 @@
 # External approval receipt issuer contract
 
-Status: **core verifier implemented; external issuer not yet deployed**  
+Status: **core verifier and public authority source implemented; production authority not yet deployed**
 Receipt schema: `shm-approval-receipt/v1`  
 JSON Schema: [`approval-receipt-v1.schema.json`](approval-receipt-v1.schema.json)
 
@@ -14,7 +14,7 @@ The unattended worker is untrusted. It may choose CLI arguments, environment var
 - a local/raw transport fallback that bypasses receipt verification;
 - an API that signs caller-provided bytes.
 
-The issuer belongs in `gugu91/extensions`' `slack-bridge` / durable `broker-core` state, under a separate hardened principal or service. Core `superhuman-mail` contains verification and atomic consumption only. Until a trust root is release-pinned or installed as a root-owned non-writable system file, `shm send --confirm` fails with `APPROVAL_TRUST_UNAVAILABLE`.
+The issuer, signer, and executor source live under this repository's `authority/` tree and ship as separately signed artifacts under distinct hardened principals and ACLs. Core `superhuman-mail` contains verification and atomic consumption. Until a trust root is release-pinned or installed as a root-owned non-writable system file, `shm send --confirm` fails with `APPROVAL_TRUST_UNAVAILABLE`.
 
 A signed receipt is necessary but not sufficient if the worker retains raw Superhuman credentials. Production must run receipt verification, atomic consumption, and transport in a broker-owned/root-owned or remote trusted executor. The worker may submit a request to that executor but cannot patch it or extract its credentials.
 
@@ -28,7 +28,7 @@ The trusted broker exposes semantic operations only:
 
 It never exposes `sign(bytes)`, private-key export, arbitrary approver selection, or caller-controlled trust-root configuration.
 
-`approval.create` accepts the content-free `approval_binding` returned by:
+`approval.create` accepts the content-free `approval_binding` plus the complete private attestation evidence returned by:
 
 ```bash
 shm attestation show ID_OR_PATH --account EMAIL --thread-id THREAD --draft-id DRAFT
@@ -45,11 +45,11 @@ The binding covers:
 - reserved send-identity hash;
 - delay and scheduled-send hash.
 
-The broker records the request, random nonce, ≤5-minute expiry, expected Thomas Slack principal, and approval presentation atomically before prompting. The human presentation must show the complete intended recipients, subject, body/render, attachments, and scheduling behavior. Uploaded/rendered evidence must hash to the server-recorded pending request; caller labels or summaries are not authoritative.
+The issuer independently recomputes the binding from that evidence, posts the complete intended recipients, subject, body/render, attachments, and scheduling behavior to its fixed policy channel, then records the request, random nonce, ≤5-minute expiry, configured Slack principal, presentation digest, and returned channel/thread atomically. Evidence that does not reproduce the requested binding fails before presentation; caller labels or summaries are not authoritative.
 
 ## Authenticated decision
 
-The issuer directly consumes an authenticated Slack event from Thomas (`U0AF5S3LQ5C`) tied to one pending request. It must verify workspace, channel/thread, Slack event/message ID, principal, exact approval keyword, pending state, nonce, and expiry. It then atomically changes `pending -> approved` once and signs only the server-constructed receipt.
+The issuer directly consumes an authenticated Slack event from the policy-configured approver tied to one pending request. It must verify workspace, channel/thread, Slack event/message ID, principal, exact approval keyword, pending state, nonce, and expiry. It then atomically changes `pending -> approved` once and signs only the server-constructed receipt.
 
 Rejections, cancellations, duplicate decisions, late events, edited/deleted approval messages, or events from another principal never produce a receipt. The durable broker state owns TTL, nonce, decision, and audit history.
 
@@ -68,7 +68,7 @@ The approver object is:
 
 ```json
 {
-  "principal": "slack:U0AF5S3LQ5C",
+  "principal": "slack:CONFIGURED_APPROVER_ID",
   "approval_event_id": "<immutable authenticated Slack event/message ID>"
 }
 ```

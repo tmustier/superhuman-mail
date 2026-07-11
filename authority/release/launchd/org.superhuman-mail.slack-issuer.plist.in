@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>org.superhuman-mail.slack-issuer</string>
+  <key>ProgramArguments</key><array><string>@RELEASE_ROOT@/slack-issuer.app/Contents/MacOS/launch</string></array>
+  <key>UserName</key><string>@ISSUER_USER@</string>
+  <key>GroupName</key><string>@ISSUER_GROUP@</string>
+  <key>EnvironmentVariables</key><dict>
+    <key>SHM_ISSUER_SOCKET</key><string>@ISSUER_SOCKET@</string>
+    <key>SHM_SIGNER_SOCKET</key><string>@SIGNER_SOCKET@</string>
+    <key>SHM_ISSUER_DB</key><string>@ISSUER_DB@</string>
+    <key>SHM_ISSUER_NAME</key><string>@ISSUER_NAME@</string>
+    <key>SHM_ISSUER_KEY_ID</key><string>@KEY_ID@</string>
+    <key>SHM_ISSUER_APPROVER</key><string>@APPROVER_PRINCIPAL@</string>
+    <key>SHM_ISSUER_APPROVAL_KEYWORD</key><string>@APPROVAL_KEYWORD@</string>
+    <key>SHM_ISSUER_CHANNEL</key><string>@APPROVAL_CHANNEL@</string>
+    <key>SHM_ISSUER_CALLER_GID</key><string>@ISSUER_CALLER_GID@</string>
+  </dict>
+  <key>KeepAlive</key><true/><key>RunAtLoad</key><true/>
+</dict></plist>

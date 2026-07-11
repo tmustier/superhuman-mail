@@ -1,0 +1,8 @@
+{
+  "name": "@superhuman-mail/approval-signer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": { "shm-approval-signer": "daemon.mjs" },
+  "engines": { "node": ">=24" }
+}

@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- move public exact-send authority ownership into this repository
+- add separately signed Slack issuer, Ed25519 signer, and 60-second cancellable send executor artifacts with independent ACLs and revocation
+- add the native provider credential bridge and fixed `shm executor-contract`, `draft get`, and conditional `draft send` contract
+- add durable grace/abort/replay/crash semantics, body-free authority audit, adversarial tests, and exact-head public-source scrub
+- parameterize all production identity, policy, and deployment values; no credentials or personal/customer data are committed
+
 ## v0.3.0 — 2026-07-10
 
 This safety release replaces ambiguous draft/send behavior with typed lifecycle, local attempt reconciliation, and exact live-Superhuman render attestation.

@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>org.superhuman-mail.approval-signer</string>
+  <key>ProgramArguments</key><array><string>@RELEASE_ROOT@/approval-signer.app/Contents/MacOS/launch</string></array>
+  <key>UserName</key><string>@SIGNER_USER@</string>
+  <key>GroupName</key><string>@SIGNER_GROUP@</string>
+  <key>EnvironmentVariables</key><dict>
+    <key>SHM_SIGNER_SOCKET</key><string>@SIGNER_SOCKET@</string>
+    <key>SHM_SIGNER_ISSUER</key><string>@ISSUER_NAME@</string>
+    <key>SHM_SIGNER_KEY_ID</key><string>@KEY_ID@</string>
+    <key>SHM_SIGNER_APPROVER</key><string>@APPROVER_PRINCIPAL@</string>
+    <key>SHM_SIGNER_CALLER_GID</key><string>@SIGNER_CALLER_GID@</string>
+  </dict>
+  <key>KeepAlive</key><true/><key>RunAtLoad</key><true/>
+</dict></plist>
