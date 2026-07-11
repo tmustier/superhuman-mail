@@ -109,27 +109,27 @@ The inspector verifies canonical ID/HMAC, screenshot hashes, expiry, and optiona
 
 ### 4. Grace period and strict execution
 
-The external Slack approval broker verifies the portable attestation bundle, presents every reviewed outgoing field plus all render screenshots, authenticates the authorized Socket Mode decision, and issues a ≤5-minute Ed25519 receipt. Verify it read-only, then submit it to the credential-isolated trusted executor:
+The external Slack approval broker accepts only account/thread/draft/delay semantics, obtains a trusted-prepared render over the issuer-only executor socket, presents every reviewed outgoing field plus attachment digests and both role-bound screenshots, authenticates the authorized Socket Mode decision, and issues a ≤5-minute Ed25519 receipt. Then submit it to the credential-isolated executor:
 
 ```bash
-shm approval verify RECEIPT.json --attestation ID_OR_PATH
+# Optional local inspection only when the trusted-prepared artifact is available:
+# shm approval verify RECEIPT.json --attestation ID_OR_PATH
 shm send --confirm THREAD DRAFT \
   --account owner@example.com \
-  --attestation ID_OR_PATH \
   --approval-receipt RECEIPT.json \
   --delay 20 \
   --wait 120
 ```
 
-`shm send --confirm` performs no provider call. It verifies the local artifact/receipt, sends the record and digest-checked screenshot bytes over the fixed Unix socket, and requests execution by canonical `sha256:` attestation ID. The executor then:
+`shm send --confirm` performs no provider call and sends no evidence bytes. It submits the receipt and identifiers over the broker-only execute socket. The executor then:
 
-1. re-verifies the receipt against the portable attestation and imports it into executor-owned content-addressed storage (never a caller path);
+1. re-verifies the receipt against its own trusted-prepared marker, record, screenshot roles/bytes, and fixed storage (never a caller path);
 2. runs authoritative lifecycle/envelope/body preflight and a no-write live renderer probe;
 3. durably starts a minimum 60-second abort grace, requiring enough receipt lifetime for grace plus claim margin;
 4. reruns the renderer after grace and requires complete revision, fingerprint, binding, and outgoing-payload equality;
 5. in one `BEGIN IMMEDIATE`, rechecks expiry and atomically changes the only receipt row from `grace` to `claimed`;
 6. invokes the credential bridge's conditional provider call once;
-7. reconciles provider evidence without retry after any ambiguous boundary.
+7. reconciles provider evidence without retry after any ambiguous boundary, then removes private prepared records/screenshots while retaining body-free journal hashes.
 
 There is no unattested fallback for customer mail.
 

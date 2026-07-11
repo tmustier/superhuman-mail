@@ -4,6 +4,6 @@
   <key>Label</key><string>org.superhuman-mail.send-executor</string>
   <key>ProgramArguments</key><array><string>@RELEASE_ROOT@/send-executor.app/Contents/MacOS/node</string><string>@RELEASE_ROOT@/send-executor.app/Contents/Resources/send-executor/daemon.mjs</string></array>
   <key>UserName</key><string>@EXECUTOR_USER@</string>
-  <key>GroupName</key><string>@EXECUTOR_SOCKET_PEER_GROUP@</string>
+  <key>GroupName</key><string>@EXECUTOR_PRIVATE_GROUP@</string>
   <key>KeepAlive</key><true/><key>RunAtLoad</key><true/>
 </dict></plist>

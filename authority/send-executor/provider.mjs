@@ -2,19 +2,20 @@ import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { promisify } from "node:util";
+import { fileURLToPath } from "node:url";
 import { DefinitivePrePostRejection } from "./executor.mjs";
 
 const execFileAsync = promisify(execFile);
-const BRIDGE = "/usr/local/libexec/superhuman-mail/send-executor/current/credential-bridge";
+const BRIDGE = fileURLToPath(new URL("../../MacOS/credential-bridge", import.meta.url));
 const PINNED_BRIDGE_SHA256 = "REPLACE_DURING_SIGNED_RELEASE";
-async function runBridge(args, timeout) {
+async function runBridge(args, timeout, maxBuffer = 1024 * 1024) {
   const bytes = await readFile(BRIDGE);
   const actual = createHash("sha256").update(bytes).digest("hex");
   if (actual !== PINNED_BRIDGE_SHA256)
     throw new Error("untrusted_credential_bridge");
   try {
     const { stdout } = await execFileAsync(BRIDGE, args, {
-      encoding: "utf8", env: { PATH: "/usr/bin:/bin" }, maxBuffer: 1024 * 1024, timeout,
+      encoding: "utf8", env: { PATH: "/usr/bin:/bin" }, maxBuffer, timeout,
     });
     const envelope = JSON.parse(stdout);
     if (envelope?.status !== "succeeded" || !envelope.data || envelope.errors?.length) throw new Error("provider_rejected");
@@ -26,6 +27,11 @@ async function runBridge(args, timeout) {
   }
 }
 export class NativeProvider {
+  async prepare(request) {
+    return await runBridge([
+      "prepare", request.account, request.threadId, request.draftId, String(request.delaySeconds),
+    ], 120_000, 56 * 1024 * 1024);
+  }
   async render(execution) {
     const data = await runBridge([
       "render", execution.account, execution.threadId, execution.draftId, execution.attestationId,

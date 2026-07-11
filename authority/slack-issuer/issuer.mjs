@@ -49,6 +49,7 @@ export function buildApprovalPresentation(evidence, binding) {
     attestation_id: evidence.attestation_id,
     renderer: evidence.renderer,
     screenshot_sha256: evidence.screenshot_sha256,
+    attachment_digests: evidence.attachment_digests,
     delay_seconds: evidence.delay_seconds,
     outgoing: { ...outgoing, html_body_text: readableHtml(payload.html_body) },
     approval_binding: binding,
@@ -265,9 +266,10 @@ export class IssuerStore {
 }
 
 export class SlackIssuer {
-  constructor({ store, signer, presenter, issuer, keyId, expectedPrincipal, now = () => Date.now() }) {
+  constructor({ store, signer, preparer, presenter, issuer, keyId, expectedPrincipal, now = () => Date.now() }) {
     this.store = store;
     this.signer = signer;
+    this.preparer = preparer;
     this.presenter = presenter;
     this.issuer = issuer;
     this.keyId = keyId;
@@ -275,12 +277,20 @@ export class SlackIssuer {
     this.now = now;
   }
   async create(request) {
-    exact(request, ["approval_binding", "attestation_bundle", "ttl_seconds"], "create_request");
-    const validated = validateAttestationBundle(request.attestation_bundle, { now: this.now() });
+    exact(request, ["account", "thread_id", "draft_id", "delay_seconds", "ttl_seconds"], "create_request");
+    for (const key of ["account", "thread_id", "draft_id"])
+      bounded(request[key], key, 320);
+    if (!Number.isSafeInteger(request.delay_seconds) || request.delay_seconds < 0) throw new Error("invalid_delay_seconds");
+    if (!this.preparer || typeof this.preparer.prepare !== "function") throw new Error("preparer_unavailable");
+    const bundle = await this.preparer.prepare({
+      account: request.account, thread_id: request.thread_id, draft_id: request.draft_id, delay_seconds: request.delay_seconds,
+    });
+    const validated = validateAttestationBundle(bundle, { now: this.now() });
     const evidence = validated.evidence;
     const computed = bindingFromEvidence(evidence);
-    if (canonicalJson(computed) !== canonicalJson(validateBinding(request.approval_binding)))
-      throw new Error("presentation_binding_mismatch");
+    if (evidence.account.email.toLowerCase() !== request.account.toLowerCase() || evidence.thread_id !== request.thread_id ||
+        evidence.draft_id !== request.draft_id || evidence.delay_seconds !== request.delay_seconds)
+      throw new Error("prepared_evidence_mismatch");
     if (!this.presenter || typeof this.presenter.post !== "function") throw new Error("presenter_unavailable");
     const now = this.now();
     if (!Number.isSafeInteger(request.ttl_seconds) || request.ttl_seconds < 1 || request.ttl_seconds > 300)

@@ -74,6 +74,8 @@ export class ExecutorJournal {
   }
   recoverInterruptedClaims(now = new Date().toISOString()) {
     this.#db.prepare("UPDATE executions SET state='unknown',updated_at=?,error_code='interrupted_after_claim' WHERE state='claimed'").run(now);
+    this.#db.prepare("UPDATE executions SET state='expired',updated_at=?,error_code='expired_during_restart' WHERE state='grace' AND expires_at<=?")
+      .run(now, now);
   }
   start({ receiptId, receiptHash, executionHash, bindingHash, revisionId, expiresAt, nowMs }) {
     const at = new Date(nowMs).toISOString();
@@ -170,12 +172,24 @@ export class SendExecutor {
     return await execution;
   }
   async #executeOnce({ receipt, execution }) {
-    const verified = verifyReceipt(receipt, { trust: this.trust, now: this.now() });
     if (sha256(execution.account.toLowerCase()) !== receipt.binding.account_email_sha256 ||
         sha256(execution.threadId) !== receipt.binding.thread_id_sha256 ||
         sha256(execution.draftId) !== receipt.binding.draft_id_sha256 ||
         execution.attestationId !== receipt.binding.attestation_id)
       throw new Error("execution_binding_mismatch");
+    const receiptHash = sha256(receipt);
+    const executionHash = sha256({
+      account: execution.account.toLowerCase(), thread_id: execution.threadId,
+      draft_id: execution.draftId, attestation_id: execution.attestationId,
+    });
+    const bindingHash = sha256(receipt.binding);
+    const prior = this.journal.entry(receipt.receipt_id);
+    if (prior) {
+      if (prior.receiptHash !== receiptHash || prior.executionHash !== executionHash || prior.bindingHash !== bindingHash)
+        throw new Error("receipt_replay_conflict");
+      return prior;
+    }
+    const verified = verifyReceipt(receipt, { trust: this.trust, now: this.now() });
     if (Date.parse(verified.expiresAt) < this.now() + MIN_GRACE_MS + CLAIM_MARGIN_MS)
       throw new Error("receipt_lifetime_insufficient_for_grace");
     const rendered = await this.provider.render(execution);
@@ -183,13 +197,8 @@ export class SendExecutor {
     if (canonicalJson(rendered.approval_binding) !== canonicalJson(receipt.binding) ||
         rendered.draft_fingerprint !== receipt.binding.outgoing_fingerprint)
       throw new Error("rerender_binding_mismatch");
-    const receiptHash = sha256(receipt);
-    const executionHash = sha256({
-      account: execution.account.toLowerCase(), thread_id: execution.threadId,
-      draft_id: execution.draftId, attestation_id: execution.attestationId,
-    });
     let status = this.journal.start({
-      receiptId: verified.receiptId, receiptHash, executionHash, bindingHash: sha256(receipt.binding),
+      receiptId: verified.receiptId, receiptHash, executionHash, bindingHash,
       revisionId: rendered.revision_id, expiresAt: verified.expiresAt, nowMs: this.now(),
     });
     if (status.state !== "grace") return status;

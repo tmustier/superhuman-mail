@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-import { chmodSync, chownSync, unlinkSync } from "node:fs";
+import { chmodSync, statSync, unlinkSync } from "node:fs";
+import { dirname } from "node:path";
 import { createServer } from "node:http";
 import { createSigner, readPrivateKeyFromFd } from "./signer.mjs";
 
@@ -10,6 +11,10 @@ const approver = process.env.SHM_SIGNER_APPROVER;
 const callerGid = Number(process.env.SHM_SIGNER_CALLER_GID);
 if (!socket || !issuer || !keyId || !approver || !Number.isSafeInteger(callerGid) || callerGid < 1)
   throw new Error("signer_configuration_required");
+const runtime = statSync(dirname(socket)); const runtimeParent = statSync(dirname(dirname(socket)));
+if (!runtime.isDirectory() || runtime.uid !== process.getuid() || runtime.gid !== callerGid || (runtime.mode & 0o027) !== 0 ||
+    !runtimeParent.isDirectory() || runtimeParent.uid !== 0 || (runtimeParent.mode & 0o022) !== 0)
+  throw new Error("unsafe_signer_socket_directory");
 const signer = createSigner({ issuer, keyId, allowedApprover: approver, privateKeyPem: readPrivateKeyFromFd(0) });
 try { unlinkSync(socket); } catch {}
 const server = createServer((req, res) => {
@@ -36,6 +41,5 @@ const server = createServer((req, res) => {
 server.headersTimeout = 5_000;
 server.requestTimeout = 5_000;
 server.listen(socket, () => {
-  chownSync(socket, process.getuid(), callerGid);
   chmodSync(socket, 0o660);
 });

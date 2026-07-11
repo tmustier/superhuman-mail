@@ -91,6 +91,18 @@ def test_confirm_passes_attestation_approval_and_wait_and_pending_exits_four(cap
     assert json.loads(capsys.readouterr().out)["data"]["sent"] is False
 
 
+def test_executor_status_and_abort_route_to_canonical_authority(capsys):
+    receipt_id = "sha256:" + "a" * 64
+    with patch("superhuman_mail.cli._authority_client.status", return_value=ok("executor.status", {"state": "grace"})) as status:
+        assert main(["executor", "status", receipt_id]) == 0
+    status.assert_called_once_with(receipt_id)
+    assert json.loads(capsys.readouterr().out)["data"]["state"] == "grace"
+    with patch("superhuman_mail.cli._authority_client.abort", return_value=ok("executor.abort", {"state": "aborted"})) as abort:
+        assert main(["executor", "abort", receipt_id]) == 0
+    abort.assert_called_once_with(receipt_id)
+    assert json.loads(capsys.readouterr().out)["data"]["state"] == "aborted"
+
+
 def test_approval_verify_delegates_external_authority_and_replay_check(capsys):
     summary = {
         "authority": "external_ed25519_receipt_v1",

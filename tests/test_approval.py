@@ -225,6 +225,16 @@ def test_malformed_allowed_approver_configuration_fails_closed():
     assert caught.value.code == "APPROVAL_TRUST_UNAVAILABLE"
 
 
+def test_bounded_root_list_selects_exact_issuer_and_key_during_rotation():
+    private = Ed25519PrivateKey.generate()
+    active = {"issuer": ISSUER, **_roots(private)[ISSUER]}
+    old = {"issuer": ISSUER, "key_id": "old-key", "public_key": active["public_key"], "allowed_approvers": [APPROVER]}
+    result = approval.verify(
+        _receipt(private), attestation=_attestation(), roots=[old, active], now=NOW + timedelta(seconds=1),
+    )
+    assert result["key_id"] == KEY_ID
+
+
 def test_signed_but_unauthorized_approver_is_rejected():
     private = Ed25519PrivateKey.generate()
     with pytest.raises(approval.ApprovalError) as caught:

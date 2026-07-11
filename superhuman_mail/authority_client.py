@@ -1,17 +1,15 @@
 """Thin credential-free client for the one canonical send authority."""
 from __future__ import annotations
 
-import base64
 import http.client
 import json
 import socket
-from pathlib import Path
 from typing import Any
 
 from . import approval, attestation
 from ._envelope import error, fail, ok
 
-EXECUTOR_SOCKET = "/var/run/superhuman-mail-send-executor.sock"
+EXECUTOR_SOCKET = "/var/run/superhuman-mail/send-executor/execute.sock"
 
 
 class AuthorityClientError(RuntimeError):
@@ -21,10 +19,10 @@ class AuthorityClientError(RuntimeError):
         self.hint = hint
 
 
-def _request(path: str, payload: dict[str, Any], *, timeout: float) -> dict[str, Any]:
-    body = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+def _request(path: str, payload: dict[str, Any] | None = None, *, timeout: float, method: str = "POST") -> dict[str, Any]:
+    body = b"" if payload is None else json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
     request = (
-        f"POST {path} HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\n"
+        f"{method} {path} HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\n"
         f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n"
     ).encode() + body
     connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -48,24 +46,24 @@ def _request(path: str, payload: dict[str, Any], *, timeout: float) -> dict[str,
     return value
 
 
-def _bundle(record: dict[str, Any]) -> dict[str, Any]:
-    screenshots = []
-    for item in record.get("screenshots") or []:
-        path = Path(str(item.get("path") or ""))
-        try:
-            data = path.read_bytes()
-        except OSError as exc:
-            raise AuthorityClientError("ATTESTATION_ARTIFACT_MISMATCH", "An attested screenshot is unavailable") from exc
-        digest = attestation.sha256(data)
-        if digest != item.get("sha256"):
-            raise AuthorityClientError("ATTESTATION_ARTIFACT_MISMATCH", "An attested screenshot differs from its signed hash")
-        screenshots.append({
-            "sha256": digest,
-            "media_type": "image/png",
-            "data_base64": base64.b64encode(data).decode(),
-        })
-    portable = {key: value for key, value in record.items() if key != "artifact_path"}
-    return {"record": portable, "screenshots": screenshots}
+def _receipt_id(value: str) -> str:
+    if len(value) != 71 or not value.startswith("sha256:") or any(character not in "0123456789abcdef" for character in value[7:]):
+        raise AuthorityClientError("INVALID_RECEIPT_ID", "Receipt ID must be a canonical sha256 digest")
+    return value
+
+
+def status(receipt_id: str) -> dict[str, Any]:
+    try:
+        return ok("executor.status", _request(f"/v1/status/{_receipt_id(receipt_id)}", timeout=10, method="GET"))
+    except AuthorityClientError as exc:
+        return fail("executor.status", [error("conflict", exc.code, False, exc.hint)])
+
+
+def abort(receipt_id: str) -> dict[str, Any]:
+    try:
+        return ok("executor.abort", _request(f"/v1/abort/{_receipt_id(receipt_id)}", {}, timeout=10))
+    except AuthorityClientError as exc:
+        return fail("executor.abort", [error("conflict", exc.code, False, exc.hint)])
 
 
 def execute(
@@ -79,33 +77,28 @@ def execute(
     approval_ref: str | None = None,
     timeout: float = 220,
 ) -> dict[str, Any]:
-    """Import immutable evidence, then ask the isolated executor to consume it."""
+    """Submit identifiers plus the receipt; trusted evidence already lives in executor state."""
     try:
         if not account:
             raise AuthorityClientError("ACCOUNT_REQUIRED", "--account is required for strict send")
-        if not attestation_reference:
-            raise AuthorityClientError("ATTESTATION_REQUIRED", "--attestation is required for strict send")
         if not approval_receipt:
             prefix = "--approval-ref is audit-only and cannot authorize a send; " if approval_ref else ""
             raise AuthorityClientError("APPROVAL_RECEIPT_REQUIRED", prefix + "--approval-receipt is required")
         if delay < 0:
             raise AuthorityClientError("INVALID_DELAY", "--delay must be non-negative")
-        record = attestation.load(attestation_reference)
-        attestation.verify(record)
-        if record.get("thread_id") != thread_id or record.get("draft_id") != draft_id:
-            raise AuthorityClientError("ATTESTATION_DRAFT_MISMATCH", "Attestation belongs to a different draft/thread")
-        if str((record.get("account") or {}).get("email", "")).lower() != account.lower():
-            raise AuthorityClientError("ACCOUNT_BINDING_MISMATCH", "Attestation belongs to a different account")
-        if int(record.get("delay_seconds", -1)) != delay:
-            raise AuthorityClientError("ATTESTATION_DELAY_MISMATCH", "Send delay differs from the approved attestation")
         receipt = approval.load(approval_receipt)
-        approval.verify(receipt, attestation=record)
-        bundle = _bundle(record)
-        _request(
-            "/v1/import-attestation",
-            {"receipt": receipt, "attestation_bundle": bundle},
-            timeout=min(timeout, 60),
-        )
+        approval._validate_structure(receipt)
+        binding = receipt["binding"]
+        attestation_id = str(binding.get("attestation_id") or "")
+        if attestation_reference and attestation_reference != attestation_id:
+            raise AuthorityClientError("ATTESTATION_ID_MISMATCH", "Local attestation ID differs from the trusted receipt")
+        if (
+            binding.get("account_email_sha256") != attestation.sha256(account.lower())
+            or binding.get("thread_id_sha256") != attestation.sha256(thread_id)
+            or binding.get("draft_id_sha256") != attestation.sha256(draft_id)
+            or binding.get("delay_seconds") != delay
+        ):
+            raise AuthorityClientError("APPROVAL_BINDING_MISMATCH", "Receipt is bound to another execution")
         status = _request(
             "/v1/execute",
             {
@@ -114,7 +107,7 @@ def execute(
                     "account": account,
                     "thread_id": thread_id,
                     "draft_id": draft_id,
-                    "attestation_id": record["attestation_id"],
+                    "attestation_id": attestation_id,
                 },
             },
             timeout=timeout,
@@ -125,7 +118,7 @@ def execute(
             **status,
             "thread_id": thread_id,
             "draft_id": draft_id,
-            "attestation_id": record["attestation_id"],
+            "attestation_id": attestation_id,
             "sent": sent,
             "provider_confirmed": sent,
             "accepted": state in {"accepted", "provider_confirmed"},
@@ -143,8 +136,6 @@ def execute(
             return fail("send", [error("conflict", str(status.get("errorCode") or state).upper(), False, f"Trusted executor ended in {state}")])
         return ok("send", data)
     except AuthorityClientError as exc:
-        return fail("send", [error("conflict", exc.code, False, exc.hint)])
-    except attestation.AttestationError as exc:
         return fail("send", [error("conflict", exc.code, False, exc.hint)])
     except approval.ApprovalError as exc:
         return fail("send", [error("conflict", exc.code, False, exc.hint)])

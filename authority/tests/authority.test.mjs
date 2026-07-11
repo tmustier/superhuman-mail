@@ -1,16 +1,16 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { generateKeyPairSync } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { attestationIdentityContent, OUTGOING_FIELDS } from "../common/attestation.mjs";
+import { attestationIdentityContent, OUTGOING_FIELDS, validateAttestationBundle } from "../common/attestation.mjs";
 import { bindingFromEvidence, canonicalJson, issueReceipt, sha256, verifyReceipt } from "../common/receipt.mjs";
 import { createSigner } from "../approval-signer/signer.mjs";
 import { buildApprovalPresentation, decisionFromSocketPayload, IssuerStore, SlackIssuer, verifySlackRequest } from "../slack-issuer/issuer.mjs";
 import { ExecutorJournal, MIN_GRACE_MS, SendExecutor } from "../send-executor/executor.mjs";
-import { AttestationImportStore } from "../send-executor/imports.mjs";
+import { TrustedPreparedStore } from "../send-executor/prepared-store.mjs";
 
 const dirs = [];
 test.afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -45,7 +45,8 @@ function outgoingFixture() {
   };
 }
 function attestationBundle(now = Date.now()) {
-  const screenshot = Buffer.from("screenshot"); const screenshotHash = sha256(screenshot);
+  const images = [Buffer.from("89504e470d0a1a0a636f6d706f7365", "hex"), Buffer.from("89504e470d0a1a0a6f7574676f696e67", "hex")];
+  const hashes = images.map((image) => sha256(image));
   const record = {
     schema_version: 1, created_at: new Date(now).toISOString(), expires_at: new Date(now + 15 * 60_000).toISOString(),
     send_eligible: true, confidence: "exact_superhuman_renderer",
@@ -54,20 +55,30 @@ function attestationBundle(now = Date.now()) {
     source: {}, editor_html: "<p>fixture</p>", normalization: {}, outgoing_payload: outgoingFixture(),
     signature_settings: {}, renderer: { adapter_version: "fixture", app_version: "fixture", web_version: "fixture" },
     history_id: 1, fingerprint: { exact: sha256("fingerprint-1"), fields: {} },
-    screenshots: [{ path: "/non-authoritative/local/path.png", sha256: screenshotHash }], observation: {},
+    screenshots: [
+      { role: "compose", path: "/executor-state/compose.png", sha256: hashes[0] },
+      { role: "outgoing", path: "/executor-state/outgoing.png", sha256: hashes[1] },
+    ], observation: {},
     signature: "hmac-sha256:fixture",
   };
-  record.attestation_id = sha256(canonicalJson(attestationIdentityContent(record)));
-  return { record, screenshots: [{ sha256: screenshotHash, media_type: "image/png", data_base64: screenshot.toString("base64") }] };
+  const identity = canonicalJson(attestationIdentityContent(record));
+  record.attestation_id = sha256(identity);
+  return {
+    record, identity_base64: Buffer.from(identity).toString("base64"),
+    screenshots: images.map((image, index) => ({ role: index ? "outgoing" : "compose", sha256: hashes[index], media_type: "image/png", data_base64: image.toString("base64") })),
+  };
 }
 function evidenceFixture(now = Date.now()) {
   const record = attestationBundle(now).record;
   return {
     account: record.account, thread_id: record.thread_id, draft_id: record.draft_id, attestation_id: record.attestation_id,
     outgoing_fingerprint: record.fingerprint.exact, outgoing_payload: record.outgoing_payload, renderer: record.renderer,
-    screenshot_sha256: record.screenshots.map((item) => item.sha256), superhuman_id: record.superhuman_id, delay_seconds: record.delay_seconds,
+    screenshot_sha256: record.screenshots.map((item) => item.sha256), attachment_digests: [],
+    superhuman_id: record.superhuman_id, delay_seconds: record.delay_seconds,
   };
 }
+function preparer(now = Date.now()) { return { async prepare() { return attestationBundle(now); } }; }
+function createRequest() { return { account: "owner@example.test", thread_id: "thread-1", draft_id: "draft-1", delay_seconds: 20, ttl_seconds: 240 }; }
 function presenter() { return { async post() { return { team: "team", app: "app", channel: "channel", thread: "thread" }; } }; }
 function receiptFixture({ key, now = Date.now(), ttl = 240_000, bind = binding() }) {
   return issueReceipt({
@@ -85,9 +96,17 @@ test("service source boundaries do not combine runtime secret classes", () => {
   assert.ok(!/PRIVATE KEY|provider-token/.test(issuer));
   assert.ok(!/slackSecret|provider-token/.test(signer));
   assert.ok(!/slackSecret|PRIVATE KEY/.test(executor));
+  assert.ok(executor.includes("/var/run/superhuman-mail/send-executor/execute.sock"));
+  assert.ok(executor.includes("/var/run/superhuman-mail/render-preparer/prepare.sock"));
+  const issuerLauncher = readFileSync(new URL("../slack-issuer/native/RuntimeSecretLauncher.swift", import.meta.url), "utf8");
+  const signerLauncher = readFileSync(new URL("../approval-signer/native/RuntimeSecretLauncher.swift", import.meta.url), "utf8");
   const bridge = readFileSync(new URL("../send-executor/native/CredentialBridge.swift", import.meta.url), "utf8");
   for (const source of [issuer, signer, executor]) assert.ok(!source.includes("chownSync(socket, 0,"));
-  assert.ok(!bridge.includes("root_required"));
+  for (const helper of [issuerLauncher, signerLauncher, bridge]) {
+    assert.ok(helper.includes("expected_uid")); assert.ok(helper.includes("geteuid()"));
+    assert.ok(helper.indexOf("runtime_identity_mismatch") < helper.indexOf("SecItemCopyMatching"));
+    assert.ok(!helper.includes("ProcessInfo.processInfo.environment"));
+  }
   for (const template of [
     "../release/launchd/org.superhuman-mail.slack-issuer.plist.in",
     "../release/launchd/org.superhuman-mail.approval-signer.plist.in",
@@ -96,6 +115,20 @@ test("service source boundaries do not combine runtime secret classes", () => {
     const plist = readFileSync(new URL(template, import.meta.url), "utf8");
     assert.match(plist, /<key>UserName<\/key><string>@(?:ISSUER|SIGNER|EXECUTOR)_USER@<\/string>/);
   }
+});
+
+test("secret launcher rejects direct execution from a user-owned path before Keychain access", () => {
+  if (process.platform !== "darwin") return;
+  const dir = mkdtempSync(join(tmpdir(), "shm-launcher-")); dirs.push(dir);
+  const binary = join(dir, "launch");
+  const compiled = spawnSync("xcrun", ["swiftc", "-framework", "Security", "authority/approval-signer/native/RuntimeSecretLauncher.swift", "-o", binary], {
+    cwd: new URL("../..", import.meta.url), encoding: "utf8",
+  });
+  assert.equal(compiled.status, 0, compiled.stderr);
+  const invoked = spawnSync(binary, [], { encoding: "utf8" });
+  assert.notEqual(invoked.status, 0);
+  assert.match(invoked.stderr, /executable_chain_unsafe/);
+  assert.ok(!invoked.stderr.includes("signing_key_unavailable"));
 });
 
 test("flat v1 signer emits a receipt accepted by the independent verifier", () => {
@@ -121,9 +154,8 @@ test("Slack issuer authenticates context, issues once, and keeps body-free audit
   const key = keys(); let now = Date.now();
   const signer = createSigner({ issuer: "test-issuer", keyId: "test-key", allowedApprover: "slack:test-approver", privateKeyPem: key.privateKeyPem, now: () => now });
   const store = new IssuerStore(join(dir, "issuer.sqlite3"));
-  const issuer = new SlackIssuer({ store, signer, presenter: presenter(), issuer: "test-issuer", keyId: "test-key", expectedPrincipal: "slack:test-approver", now: () => now });
-  const bundle = attestationBundle(now); const evidence = evidenceFixture(now);
-  const created = await issuer.create({ approval_binding: bindingFromEvidence(evidence), attestation_bundle: bundle, ttl_seconds: 240 });
+  const issuer = new SlackIssuer({ store, signer, preparer: preparer(now), presenter: presenter(), issuer: "test-issuer", keyId: "test-key", expectedPrincipal: "slack:test-approver", now: () => now });
+  const created = await issuer.create(createRequest());
   const event = { principal: "slack:test-approver", team_sha256: sha256("team"), app_sha256: sha256("app"), channel_sha256: sha256("channel"), thread_sha256: sha256("thread"), approval_event_id: "event-1", decision: "approve", nonce: created.nonce };
   const first = await issuer.approve(created.request_id, event);
   const replay = await issuer.approve(created.request_id, event);
@@ -140,11 +172,26 @@ test("issuer computes the binding from complete private evidence before Slack pr
   const dir = mkdtempSync(join(tmpdir(), "shm-presentation-")); dirs.push(dir);
   const key = keys(); let posts = 0;
   const signer = createSigner({ issuer: "test-issuer", keyId: "test-key", allowedApprover: "slack:test-approver", privateKeyPem: key.privateKeyPem });
-  const issuer = new SlackIssuer({ store: new IssuerStore(join(dir, "issuer.sqlite3")), signer, presenter: { async post() { posts += 1; return { team: "team", app: "app", channel: "channel", thread: "thread" }; } }, issuer: "test-issuer", keyId: "test-key", expectedPrincipal: "slack:test-approver" });
-  const approved = evidenceFixture(); const changed = attestationBundle(); changed.record.outgoing_payload.html_body = "<p>changed</p>";
-  changed.record.attestation_id = sha256(canonicalJson(attestationIdentityContent(changed.record)));
-  await assert.rejects(issuer.create({ approval_binding: bindingFromEvidence(approved), attestation_bundle: changed, ttl_seconds: 240 }), /presentation_binding_mismatch/);
+  const changed = attestationBundle(); changed.record.thread_id = "wrong-thread";
+  const identity = canonicalJson(attestationIdentityContent(changed.record));
+  changed.record.attestation_id = sha256(identity); changed.identity_base64 = Buffer.from(identity).toString("base64");
+  const issuer = new SlackIssuer({ store: new IssuerStore(join(dir, "issuer.sqlite3")), signer, preparer: { async prepare() { return changed; } }, presenter: { async post() { posts += 1; return { team: "team", app: "app", channel: "channel", thread: "thread" }; } }, issuer: "test-issuer", keyId: "test-key", expectedPrincipal: "slack:test-approver" });
+  await assert.rejects(issuer.create(createRequest()), /prepared_evidence_mismatch/);
   assert.equal(posts, 0);
+});
+
+test("issuer accepts only semantic prepare requests and never caller evidence bytes", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "shm-trusted-prepare-")); dirs.push(dir);
+  const key = keys(); let preparedRequest;
+  const issuer = new SlackIssuer({
+    store: new IssuerStore(join(dir, "issuer.sqlite3")),
+    signer: createSigner({ issuer: "test-issuer", keyId: "test-key", allowedApprover: "slack:test-approver", privateKeyPem: key.privateKeyPem }),
+    preparer: { async prepare(request) { preparedRequest = request; return attestationBundle(); } }, presenter: presenter(),
+    issuer: "test-issuer", keyId: "test-key", expectedPrincipal: "slack:test-approver",
+  });
+  await issuer.create(createRequest());
+  assert.deepEqual(preparedRequest, { account: "owner@example.test", thread_id: "thread-1", draft_id: "draft-1", delay_seconds: 20 });
+  await assert.rejects(issuer.create({ ...createRequest(), attestation_bundle: attestationBundle() }), /invalid_create_request_fields/);
 });
 
 test("Slack presentation exhaustively changes for every send-affecting field and includes screenshots", () => {
@@ -165,10 +212,9 @@ test("Socket Mode decision maps fixed authenticated workspace context without a 
   const key = keys(); const now = Date.now(); const store = new IssuerStore(join(dir, "issuer.sqlite3"));
   const issuer = new SlackIssuer({
     store, signer: createSigner({ issuer: "test-issuer", keyId: "test-key", allowedApprover: "slack:test-approver", privateKeyPem: key.privateKeyPem, now: () => now }),
-    presenter: presenter(), issuer: "test-issuer", keyId: "test-key", expectedPrincipal: "slack:test-approver", now: () => now,
+    preparer: preparer(now), presenter: presenter(), issuer: "test-issuer", keyId: "test-key", expectedPrincipal: "slack:test-approver", now: () => now,
   });
-  const evidence = evidenceFixture(now);
-  const created = await issuer.create({ approval_binding: bindingFromEvidence(evidence), attestation_bundle: attestationBundle(now), ttl_seconds: 240 });
+  const created = await issuer.create(createRequest());
   const payload = {
     type: "event_callback", team_id: "team", api_app_id: "app", event_id: "immutable-event",
     event: { type: "message", user: "test-approver", channel: "channel", thread_ts: "thread", ts: "decision-ts", text: `approve ${created.nonce}` },
@@ -180,31 +226,45 @@ test("Socket Mode decision maps fixed authenticated workspace context without a 
   assert.throws(() => decisionFromSocketPayload({ store, payload: { ...payload, event: { ...payload.event, subtype: "message_changed" } }, teamId: "team", appId: "app", channel: "channel", approvalKeyword: "approve" }), /invalid_slack_decision_event/);
 });
 
-test("receipt-authorized attestation import is portable and Python-verifiable", () => {
-  const dir = mkdtempSync(join(tmpdir(), "shm-import-")); dirs.push(dir);
-  const now = Date.now(); const key = keys(); const bundle = attestationBundle(now);
-  const bind = bindingFromEvidence(evidenceFixture(now));
-  const receipt = receiptFixture({ key, now, bind });
-  const imported = new AttestationImportStore(join(dir, "imports")).import(
-    { receipt, attestation_bundle: bundle },
-    { trust: { issuer: "test-issuer", keyId: "test-key", publicKeyPem: key.publicKeyPem, allowedApprovers: ["slack:test-approver"] }, now },
-  );
-  assert.equal(imported.attestation_id, bundle.record.attestation_id);
-  const root = join(dir, "imports"); const recordPath = join(root, bundle.record.attestation_id.slice(7), "attestation.json");
+test("trusted preparer bundle carries raw Python-compatible identity bytes and required PNG roles", () => {
+  const bundle = attestationBundle();
+  const validated = validateAttestationBundle(bundle);
+  assert.equal(validated.record.attestation_id, bundle.record.attestation_id);
+  assert.deepEqual(validated.screenshots.map((item) => item.role), ["compose", "outgoing"]);
+  assert.throws(() => validateAttestationBundle({ ...bundle, screenshots: [] }), /screenshot_set_mismatch/);
+});
+
+test("Python raw identity bytes remain valid across floats and non-BMP keys", () => {
   const pythonBin = process.env.PYTHON || (existsSync(".venv/bin/python") ? ".venv/bin/python" : "python3");
-  const checked = spawnSync(pythonBin, ["-c", "import json,sys; from pathlib import Path; from superhuman_mail import attestation; r=json.loads(Path(sys.argv[1]).read_text()); attestation.verify_imported(r, import_root=Path(sys.argv[2])); print(r['attestation_id'])", recordPath, root], {
+  const generated = spawnSync(pythonBin, ["authority/tests/python_prepared_bundle.py"], {
     cwd: new URL("../..", import.meta.url), encoding: "utf8",
   });
-  assert.equal(checked.status, 0, checked.stderr);
-  assert.equal(checked.stdout.trim(), bundle.record.attestation_id);
+  assert.equal(generated.status, 0, generated.stderr);
+  const bundle = JSON.parse(generated.stdout);
+  const validated = validateAttestationBundle(bundle);
+  assert.equal(validated.record.signature_settings.opacity, 0.5);
+  assert.equal(validated.record.signature_settings["astral_😀"], "preserved");
+});
+
+test("terminal prepared evidence cleanup removes private record, PNGs, and marker", () => {
+  const dir = mkdtempSync(join(tmpdir(), "shm-prepared-cleanup-")); dirs.push(dir);
+  const state = join(dir, "state"); const prepared = join(state, "prepared-renders", "render-1");
+  mkdirSync(join(state, "attestations"), { recursive: true, mode: 0o700 }); mkdirSync(prepared, { recursive: true, mode: 0o700 });
+  const id = sha256("prepared-cleanup");
+  const screenshots = ["compose.png", "outgoing.png"].map((name) => { const path = join(prepared, name); writeFileSync(path, "private", { mode: 0o600 }); return { path }; });
+  writeFileSync(join(state, "attestations", `${id}.json`), JSON.stringify({ expires_at: new Date(Date.now() + 60_000).toISOString(), screenshots }), { mode: 0o600 });
+  const store = new TrustedPreparedStore(join(state, "trusted-prepared")); store.mark(id); store.remove(id);
+  assert.equal(existsSync(join(state, "attestations", `${id}.json`)), false);
+  assert.equal(existsSync(prepared), false);
+  assert.equal(existsSync(join(state, "trusted-prepared", `${id.slice(7)}.json`)), false);
 });
 
 test("Slack approval event cannot authorize a second pending request", async () => {
   const dir = mkdtempSync(join(tmpdir(), "shm-event-replay-")); dirs.push(dir);
   const key = keys(); const now = Date.now();
   const signer = createSigner({ issuer: "test-issuer", keyId: "test-key", allowedApprover: "slack:test-approver", privateKeyPem: key.privateKeyPem, now: () => now });
-  const issuer = new SlackIssuer({ store: new IssuerStore(join(dir, "issuer.sqlite3")), signer, presenter: presenter(), issuer: "test-issuer", keyId: "test-key", expectedPrincipal: "slack:test-approver", now: () => now });
-  const create = () => { const evidence = evidenceFixture(now); return issuer.create({ approval_binding: bindingFromEvidence(evidence), attestation_bundle: attestationBundle(now), ttl_seconds: 240 }); };
+  const issuer = new SlackIssuer({ store: new IssuerStore(join(dir, "issuer.sqlite3")), signer, preparer: preparer(now), presenter: presenter(), issuer: "test-issuer", keyId: "test-key", expectedPrincipal: "slack:test-approver", now: () => now });
+  const create = () => issuer.create(createRequest());
   const first = await create(); const second = await create();
   const base = { principal: "slack:test-approver", team_sha256: sha256("team"), app_sha256: sha256("app"), channel_sha256: sha256("channel"), thread_sha256: sha256("thread"), approval_event_id: "same-event", decision: "approve" };
   await issuer.approve(first.request_id, { ...base, nonce: first.nonce });
@@ -230,8 +290,8 @@ test("credential-free issuer/signature/Python/executor contract with virtual gra
   const bundle = attestationBundle(now); const attestation = bundle.record;
   const evidence = evidenceFixture(now); const bind = bindingFromEvidence(evidence);
   const signer = createSigner({ issuer: "test-issuer", keyId: "test-key", allowedApprover: "slack:test-approver", privateKeyPem: key.privateKeyPem, now: () => now });
-  const issuer = new SlackIssuer({ store: new IssuerStore(join(dir, "issuer.sqlite3")), signer, presenter: presenter(), issuer: "test-issuer", keyId: "test-key", expectedPrincipal: "slack:test-approver", now: () => now });
-  const created = await issuer.create({ approval_binding: bind, attestation_bundle: bundle, ttl_seconds: 240 });
+  const issuer = new SlackIssuer({ store: new IssuerStore(join(dir, "issuer.sqlite3")), signer, preparer: preparer(now), presenter: presenter(), issuer: "test-issuer", keyId: "test-key", expectedPrincipal: "slack:test-approver", now: () => now });
+  const created = await issuer.create(createRequest());
   const receipt = await issuer.approve(created.request_id, { principal: "slack:test-approver", team_sha256: sha256("team"), app_sha256: sha256("app"), channel_sha256: sha256("channel"), thread_sha256: sha256("thread"), approval_event_id: "event-e2e", decision: "approve", nonce: created.nonce });
   const publicKey = generatePublicJwk(key.publicKeyPem);
   const pythonBin = process.env.PYTHON || (existsSync(".venv/bin/python") ? ".venv/bin/python" : "python3");
@@ -278,7 +338,7 @@ test("executor preserves 60-second cancellable grace, rerenders, claims once, an
   for (const privateValue of ["owner@example.test", "thread-1", "draft-1", "provider-message"])
     assert.ok(!persisted.includes(privateValue));
   const replay = await executor.execute(request);
-  assert.equal(replay.state, "provider_confirmed"); assert.equal(sends, 1);
+  assert.equal(replay.state, "provider_confirmed"); assert.equal(sends, 1); assert.equal(renders, 2);
   assert.ok(!journal.auditColumns().some((name) => /body|recipient|subject|token|signature|message_id$/.test(name)));
 });
 

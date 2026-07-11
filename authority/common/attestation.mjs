@@ -1,5 +1,6 @@
 import { Buffer } from "node:buffer";
-import { canonicalJson, sha256 } from "./receipt.mjs";
+import { isDeepStrictEqual } from "node:util";
+import { sha256 } from "./receipt.mjs";
 
 export const OUTGOING_FIELDS = Object.freeze([
   "headers", "superhuman_id", "rfc822_id", "thread_id", "message_id",
@@ -29,7 +30,7 @@ export function attestationIdentityContent(record) {
     Object.entries(record).filter(([key]) => !["attestation_id", "signature", "artifact_path"].includes(key)),
   );
   if (Array.isArray(content.screenshots)) {
-    content.screenshots = content.screenshots.map((item) => ({ sha256: item?.sha256 }));
+    content.screenshots = content.screenshots.map((item) => ({ role: item?.role, sha256: item?.sha256 }));
   }
   return content;
 }
@@ -56,27 +57,39 @@ export function evidenceFromAttestation(record) {
       web_version: renderer.web_version,
     },
     screenshot_sha256: record.screenshots.map((item) => hash(item?.sha256, "screenshot_sha256")),
+    attachment_digests: Array.isArray(record.source?.attachments) ? record.source.attachments.map((item) => ({
+      uuid: String(item?.uuid || ""), name: String(item?.name || ""), digest: String(item?.digest || ""),
+    })) : [],
     superhuman_id: record.superhuman_id,
     delay_seconds: record.delay_seconds,
   };
 }
 
 export function validateAttestationBundle(bundle, { now = Date.now() } = {}) {
-  exact(bundle, ["record", "screenshots"], "attestation_bundle");
+  exact(bundle, ["record", "identity_base64", "screenshots"], "attestation_bundle");
   const record = bundle.record;
   if (!record || Array.isArray(record) || typeof record !== "object") throw new Error("invalid_attestation");
   hash(record.attestation_id, "attestation_id");
-  if (sha256(canonicalJson(attestationIdentityContent(record))) !== record.attestation_id)
-    throw new Error("attestation_id_mismatch");
+  if (typeof bundle.identity_base64 !== "string" || !/^[A-Za-z0-9+/]*={0,2}$/.test(bundle.identity_base64))
+    throw new Error("invalid_attestation_identity_base64");
+  const identityBytes = Buffer.from(bundle.identity_base64, "base64");
+  if (identityBytes.length < 2 || identityBytes.length > 8 * 1024 * 1024 || identityBytes.toString("base64") !== bundle.identity_base64)
+    throw new Error("invalid_attestation_identity_bytes");
+  if (sha256(identityBytes) !== record.attestation_id) throw new Error("attestation_id_mismatch");
+  let parsedIdentity;
+  try { parsedIdentity = JSON.parse(identityBytes.toString("utf8")); } catch { throw new Error("invalid_attestation_identity_json"); }
+  if (!isDeepStrictEqual(parsedIdentity, attestationIdentityContent(record))) throw new Error("attestation_identity_content_mismatch");
   if (record.send_eligible !== true) throw new Error("attestation_not_send_eligible");
   const expires = Date.parse(record.expires_at);
   if (!Number.isFinite(expires) || expires <= now) throw new Error("attestation_expired");
   const evidence = evidenceFromAttestation(record);
-  if (!Array.isArray(bundle.screenshots) || bundle.screenshots.length !== evidence.screenshot_sha256.length)
+  if (!Array.isArray(bundle.screenshots) || bundle.screenshots.length !== 2 || evidence.screenshot_sha256.length !== 2)
     throw new Error("screenshot_set_mismatch");
+  const expectedRoles = ["compose", "outgoing"];
   let total = 0;
   const screenshots = bundle.screenshots.map((item, index) => {
-    exact(item, ["sha256", "media_type", "data_base64"], `screenshot_${index}`);
+    exact(item, ["role", "sha256", "media_type", "data_base64"], `screenshot_${index}`);
+    if (item.role !== expectedRoles[index] || record.screenshots[index]?.role !== expectedRoles[index]) throw new Error("screenshot_role_mismatch");
     const expected = evidence.screenshot_sha256[index];
     if (hash(item.sha256, `screenshot_${index}_sha256`) !== expected) throw new Error("screenshot_order_mismatch");
     if (item.media_type !== "image/png") throw new Error("invalid_screenshot_media_type");
@@ -88,7 +101,8 @@ export function validateAttestationBundle(bundle, { now = Date.now() } = {}) {
     total += bytes.length;
     if (total > MAX_BUNDLE_BYTES) throw new Error("attestation_bundle_too_large");
     if (sha256(bytes) !== expected) throw new Error("screenshot_digest_mismatch");
-    return Object.freeze({ sha256: expected, mediaType: item.media_type, bytes });
+    if (!bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) throw new Error("invalid_screenshot_png");
+    return Object.freeze({ role: item.role, sha256: expected, mediaType: item.media_type, bytes });
   });
   return Object.freeze({ record, evidence, screenshots });
 }

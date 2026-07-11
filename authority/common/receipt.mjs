@@ -49,7 +49,7 @@ function hash(value, label) {
 export function bindingFromEvidence(evidence) {
   exactKeys(evidence, [
     "account", "thread_id", "draft_id", "attestation_id", "outgoing_fingerprint",
-    "outgoing_payload", "renderer", "screenshot_sha256", "superhuman_id", "delay_seconds",
+    "outgoing_payload", "renderer", "screenshot_sha256", "attachment_digests", "superhuman_id", "delay_seconds",
   ], "approval_evidence");
   exactKeys(evidence.account, ["provider_user_id", "email"], "evidence_account");
   exactKeys(evidence.renderer, ["adapter_version", "app_version", "web_version"], "evidence_renderer");

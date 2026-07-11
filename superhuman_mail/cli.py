@@ -19,6 +19,7 @@ from typing import Any
 
 from . import _auth, _config, _local
 from . import approval as _approval
+from . import authority_client as _authority_client
 from . import attestation as _attestation
 from . import comment as _comment
 from . import draft as _draft
@@ -32,7 +33,7 @@ from ._envelope import emit, error, fail, ok
 
 __version__ = "0.3.0"
 
-_COMMANDS = ["thread", "opens", "draft", "comment", "send", "attestation", "approval", "executor-contract", "setup", "doctor", "schema"]
+_COMMANDS = ["thread", "opens", "draft", "comment", "send", "attestation", "approval", "executor", "executor-contract", "setup", "doctor", "schema"]
 
 # ---------------------------------------------------------------------------
 # Schema definition (for agent introspection)
@@ -244,6 +245,17 @@ SCHEMA: dict[str, dict[str, Any]] = {
         "safety": "read",
         "examples": ["shm draft attest-render THREAD DRAFT --account owner@example.com --output ./preview"],
     },
+    "draft.prepare": {
+        "description": "Trusted bridge: create the pre-approval render bundle",
+        "args": {
+            "thread_id": {"required": True, "type": "string"},
+            "draft_id": {"required": True, "type": "string"},
+            "--account": {"required": True, "type": "string"},
+            "--delay": {"required": True, "type": "int"},
+        },
+        "safety": "executor-only-read",
+        "examples": [],
+    },
     "draft.get": {
         "description": "Trusted bridge: rerender a draft and return its content-free executor binding",
         "args": {
@@ -362,7 +374,7 @@ SCHEMA: dict[str, dict[str, Any]] = {
             "--status": {"required": False, "type": "flag", "hint": "Reconcile without sending"},
             "--confirm": {"required": False, "type": "flag", "hint": "Strict exact-attested send"},
             "--account": {"required": False, "type": "string"},
-            "--attestation": {"required": False, "type": "string", "hint": "Required with --confirm"},
+            "--attestation": {"required": False, "type": "string", "hint": "Optional receipt-bound attestation ID consistency check"},
             "--approval-receipt": {"required": False, "type": "string", "hint": "Externally signed exact-send receipt; required with --confirm"},
             "--approval-ref": {"required": False, "type": "string", "hint": "Deprecated audit correlation; never authorizes"},
             "--cdp-url": {"required": False, "type": "string", "default": "http://127.0.0.1:9222"},
@@ -374,8 +386,20 @@ SCHEMA: dict[str, dict[str, Any]] = {
         "examples": [
             "shm send --dry-run THREAD DRAFT --account owner@example.com",
             "shm send status THREAD DRAFT --account owner@example.com --wait 120",
-            "shm send --confirm THREAD DRAFT --account owner@example.com --attestation ID --approval-receipt RECEIPT.json --wait 120",
+            "shm send --confirm THREAD DRAFT --account owner@example.com --approval-receipt RECEIPT.json --wait 120",
         ],
+    },
+    "executor.status": {
+        "description": "Read canonical authority state by receipt ID",
+        "args": {"receipt_id": {"required": True, "type": "string"}},
+        "safety": "read",
+        "examples": ["shm executor status sha256:..."],
+    },
+    "executor.abort": {
+        "description": "Abort a canonical authority execution while it is in grace",
+        "args": {"receipt_id": {"required": True, "type": "string"}},
+        "safety": "write",
+        "examples": ["shm executor abort sha256:..."],
     },
     "executor-contract": {
         "description": "Report the credential-free trusted executor provider contract",
@@ -715,6 +739,14 @@ def _build_parser() -> _ShmParser:
     d_attest.add_argument("--window-id", type=int)
     d_attest.add_argument("--delay", type=int, default=20)
 
+    d_prepare = _sub(dsub, "prepare", help="Trusted executor pre-approval render", schema_key="draft.prepare")
+    d_prepare.add_argument("thread_id")
+    d_prepare.add_argument("draft_id")
+    d_prepare.add_argument("--account", required=True)
+    d_prepare.add_argument("--delay", type=int, required=True)
+    d_prepare.add_argument("--cdp-url", default="http://127.0.0.1:9222")
+    d_prepare.add_argument("--window-id", type=int)
+
     d_get = _sub(dsub, "get", help="Trusted executor render binding", schema_key="draft.get")
     d_get.add_argument("thread_id")
     d_get.add_argument("draft_id")
@@ -802,6 +834,14 @@ def _build_parser() -> _ShmParser:
     ap_verify = _sub(apsub, "verify", help="Verify receipt authority/binding/replay state", schema_key="approval.verify")
     ap_verify.add_argument("reference")
     ap_verify.add_argument("--attestation", required=True)
+
+    # -- canonical executor status/abort (credential-free) --
+    executor_p = _sub(sub, "executor", help="Canonical send-executor operations")
+    exsub = executor_p.add_subparsers(dest="action")
+    ex_status = _sub(exsub, "status", help="Read receipt execution state", schema_key="executor.status")
+    ex_status.add_argument("receipt_id")
+    ex_abort = _sub(exsub, "abort", help="Abort during grace", schema_key="executor.abort")
+    ex_abort.add_argument("receipt_id")
 
     # -- executor contract (credential-free) --
     _sub(sub, "executor-contract", help="Report the fixed trusted executor provider contract", schema_key="executor-contract")
@@ -946,6 +986,20 @@ def main(argv: list[str] | None = None) -> int:
                 }))
             except _attestation.AttestationError as exc:
                 return emit(fail("draft.attest-render", [error("conflict", exc.code, False, exc.hint)]))
+        elif args.action == "prepare":
+            try:
+                _executor.require_credential_bridge()
+                return emit(ok("draft.prepare", _executor.prepare_attestation(
+                    args.thread_id,
+                    args.draft_id,
+                    account=args.account,
+                    delay=args.delay,
+                    renderer=_attestation.CdpRenderer(cdp_url=args.cdp_url, window_id=args.window_id),
+                )))
+            except _executor.ExecutorContractError as exc:
+                return emit(fail("draft.prepare", [error("conflict", exc.code, False, exc.hint)]))
+            except _attestation.AttestationError as exc:
+                return emit(fail("draft.prepare", [error("conflict", exc.code, False, exc.hint)]))
         elif args.action == "get":
             try:
                 _executor.require_credential_bridge()
@@ -1064,6 +1118,13 @@ def main(argv: list[str] | None = None) -> int:
                 return emit(fail("approval.verify", [error("conflict", exc.code, False, exc.hint)]))
             except _attestation.AttestationError as exc:
                 return emit(fail("approval.verify", [error("conflict", exc.code, False, exc.hint)]))
+
+    # -- canonical executor status/abort --
+    elif args.command == "executor":
+        if not getattr(args, "action", None):
+            return emit(fail("executor", [error("input", "MISSING_ACTION", False, "Use: shm executor status|abort RECEIPT_ID")]))
+        result = _authority_client.status(args.receipt_id) if args.action == "status" else _authority_client.abort(args.receipt_id)
+        return emit(result)
 
     # -- credential-free executor contract --
     elif args.command == "executor-contract":

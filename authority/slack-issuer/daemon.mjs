@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-import { chmodSync, chownSync, readFileSync, unlinkSync } from "node:fs";
+import { chmodSync, readFileSync, statSync, unlinkSync } from "node:fs";
 import { createServer, request as httpRequest } from "node:http";
+import { dirname } from "node:path";
 import { decisionFromSocketPayload, IssuerStore, SlackIssuer } from "./issuer.mjs";
 import { canonicalJson } from "../common/receipt.mjs";
 
@@ -8,6 +9,21 @@ function required(name) {
   const value = process.env[name];
   if (!value) throw new Error(`missing_${name.toLowerCase()}`);
   return value;
+}
+function semanticClient(socketPath, path, timeout) {
+  return { call(payload) { return new Promise((resolve, reject) => {
+    const body = Buffer.from(JSON.stringify(payload));
+    const req = httpRequest({ socketPath, path, method: "POST", headers: { "content-type": "application/json", "content-length": body.length } }, (res) => {
+      const chunks = [];
+      res.on("data", (chunk) => chunks.push(chunk));
+      res.on("end", () => {
+        try { if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) throw new Error("semantic_service_rejected"); resolve(JSON.parse(Buffer.concat(chunks).toString("utf8"))); }
+        catch (error) { reject(error); }
+      });
+    });
+    req.setTimeout(timeout, () => req.destroy(new Error("semantic_service_timeout")));
+    req.on("error", reject); req.end(body);
+  }); } };
 }
 function signerClient(socketPath) {
   return { issue(payload) { return new Promise((resolve, reject) => {
@@ -63,6 +79,7 @@ async function uploadScreenshot({ bytes, sha256: digest }, { channel, thread }, 
 
 const socket = required("SHM_ISSUER_SOCKET");
 const signerSocket = required("SHM_SIGNER_SOCKET");
+const preparerSocket = required("SHM_PREPARER_SOCKET");
 const db = required("SHM_ISSUER_DB");
 const issuerName = required("SHM_ISSUER_NAME");
 const keyId = required("SHM_ISSUER_KEY_ID");
@@ -73,6 +90,10 @@ const teamId = required("SHM_ISSUER_TEAM_ID");
 const appId = required("SHM_ISSUER_APP_ID");
 const callerGid = Number(required("SHM_ISSUER_CALLER_GID"));
 if (!Number.isSafeInteger(callerGid) || callerGid < 1) throw new Error("invalid_caller_gid");
+const runtime = statSync(dirname(socket)); const runtimeParent = statSync(dirname(dirname(socket)));
+if (!runtime.isDirectory() || runtime.uid !== process.getuid() || runtime.gid !== callerGid || (runtime.mode & 0o027) !== 0 ||
+    !runtimeParent.isDirectory() || runtimeParent.uid !== 0 || (runtimeParent.mode & 0o022) !== 0)
+  throw new Error("unsafe_issuer_socket_directory");
 const secretBundle = JSON.parse(readFileSync(0, "utf8"));
 if (Object.keys(secretBundle).sort().join(",") !== "app_token,bot_token" ||
     typeof secretBundle.app_token !== "string" || !secretBundle.app_token || secretBundle.app_token.length > 4096 ||
@@ -101,7 +122,11 @@ const presenter = {
   },
 };
 const store = new IssuerStore(db);
-const issuer = new SlackIssuer({ store, signer: signerClient(signerSocket), presenter, issuer: issuerName, keyId, expectedPrincipal: principal });
+const preparerTransport = semanticClient(preparerSocket, "/v1/prepare", 150_000);
+const issuer = new SlackIssuer({
+  store, signer: signerClient(signerSocket), preparer: { prepare: (request) => preparerTransport.call(request) },
+  presenter, issuer: issuerName, keyId, expectedPrincipal: principal,
+});
 void issuer.recoverApproved().catch(() => {});
 
 function durablyRecordSocketEnvelope(envelope) {
@@ -152,4 +177,4 @@ const server = createServer((req, res) => {
   })();
 });
 server.headersTimeout = 5_000; server.requestTimeout = 10_000;
-server.listen(socket, () => { chownSync(socket, process.getuid(), callerGid); chmodSync(socket, 0o660); });
+server.listen(socket, () => { chmodSync(socket, 0o660); });

@@ -141,7 +141,7 @@ shm send --dry-run <thread_id> <draft_id> --account owner@example.com
 shm draft attest-render <thread_id> <draft_id> --account owner@example.com --output ./private-preview [--window-id ID]
 shm attestation show <id-or-path> --account owner@example.com --thread-id <thread_id> --draft-id <draft_id>
 shm approval verify <receipt.json> --attestation <id-or-path>
-shm send --confirm <thread_id> <draft_id> --account owner@example.com --attestation <id-or-path> --approval-receipt <receipt.json> --wait 120
+shm send --confirm <thread_id> <draft_id> --account owner@example.com --approval-receipt <receipt.json> --wait 120
 shm send status <thread_id> <draft_id> --account owner@example.com --wait 120
 
 # Diagnostics
@@ -154,7 +154,7 @@ shm schema draft.forward
 
 ### Strict send semantics
 
-`send --dry-run` is metadata/lifecycle validation only; it reports `send_eligible: false` until an exact live-Superhuman render is attested. `send --confirm` is a credential-free thin client: it verifies the Ed25519 receipt locally, imports the portable attestation and screenshot bytes through the fixed executor socket, and asks the executor to enforce its durable 60-second grace, rerender, single claim, and conditional provider call. It has no local journal or transport fallback. Caller-supplied `--approval-ref` never authorizes.
+`send --dry-run` is metadata/lifecycle validation only. Approval preparation is authority-owned: the Slack issuer accepts account/thread/draft/delay semantics only and obtains the exact live render plus two PNG roles from the issuer-only executor prepare socket. `send --confirm` is a credential-free thin client that submits the receipt and identifiers to the separate execute socket for durable 60-second grace, rerender, single claim, and conditional provider call. It accepts no caller evidence bytes and has no local journal or transport fallback. Caller-supplied `--approval-ref` never authorizes.
 
 Only `state: provider_confirmed` returns `sent: true`. Accepted/pending/unknown outcomes remain non-sent. The executor journal is the one canonical receipt-consumption boundary; global exactly-once outside that credential authority is not claimed. Until an external issuer public key is pinned and the transport credentials are isolated in a trusted executor, confirm fails closed with `APPROVAL_TRUST_UNAVAILABLE`.
 

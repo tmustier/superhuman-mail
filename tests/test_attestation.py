@@ -101,8 +101,8 @@ class FakeRenderer:
         output_dir.mkdir(parents=True, exist_ok=True)
         compose = output_dir / "compose.png"
         outgoing = output_dir / "outgoing.png"
-        compose.write_bytes(b"compose")
-        outgoing.write_bytes(b"outgoing")
+        compose.write_bytes(b"\x89PNG\r\n\x1a\ncompose")
+        outgoing.write_bytes(b"\x89PNG\r\n\x1a\noutgoing")
         return {
             "account_email": ACCOUNT["email"],
             "thread_id": THREAD,
@@ -409,6 +409,32 @@ def test_stale_source_blocks_before_second_probe(tmp_path):
             attestation.revalidate_for_send(record, account=ACCOUNT["email"], renderer=renderer)
     assert caught.value.code == "STALE_ATTESTATION"
     assert renderer.calls == []
+
+
+def test_executor_prepared_record_rerenders_without_worker_hmac(monkeypatch, tmp_path):
+    state = tmp_path / "state"
+    prepared = state / "prepared-renders" / "render-fixture"
+    prepared.mkdir(parents=True, mode=0o700)
+    monkeypatch.setenv("SHM_EXECUTOR_PREPARE_MODE", "1")
+    with patch("superhuman_mail.send._superhuman_id", return_value=SID):
+        with patch("superhuman_mail.send._preflight", side_effect=[_preflight(), _preflight()]):
+            record = attestation.create(
+                THREAD, DRAFT, account=ACCOUNT["email"], output_dir=prepared, renderer=FakeRenderer(),
+            )
+    assert record["signature"] == "executor-prepared:v1"
+    marker_root = state / "trusted-prepared"
+    marker_root.mkdir(mode=0o700)
+    marker = marker_root / f"{record['attestation_id'][7:]}.json"
+    marker.write_text(json.dumps({"schema": "shm-trusted-prepared/v1", "attestation_id": record["attestation_id"]}))
+    marker.chmod(0o600)
+    monkeypatch.delenv("SHM_EXECUTOR_PREPARE_MODE")
+    monkeypatch.setenv("SHM_EXECUTOR_TRUSTED_PREPARED_DIR", str(marker_root))
+    monkeypatch.setattr(attestation, "_attestation_key", lambda **_kwargs: (_ for _ in ()).throw(AssertionError("HMAC must not be read")))
+    with patch("superhuman_mail.send._preflight", side_effect=[_preflight(), _preflight()]):
+        verified = attestation.revalidate_for_send(
+            record, account=ACCOUNT["email"], renderer=FakeRenderer(), output_dir=state / "send-time",
+        )
+    assert verified["fingerprint"]["exact"] == record["fingerprint"]["exact"]
 
 
 def test_renderer_payload_drift_after_approval_blocks(tmp_path):

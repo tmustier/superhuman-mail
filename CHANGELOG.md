@@ -6,7 +6,8 @@
 - add separately signed Slack issuer, Ed25519 signer, and 60-second cancellable send executor artifacts with independent ACLs and revocation
 - add the native provider credential bridge and fixed `shm executor-contract`, `draft get`, and conditional `draft send` contract
 - replace the v0.3.0 local confirm/receipt journal with a thin client to one credential-isolated executor journal
-- add portable `sha256:` attestation imports, exhaustive Slack presentation with attested screenshots, and fixed authenticated Socket Mode decision ingress
+- add executor-owned trusted preparation, raw portable `sha256:` identity bytes, exhaustive Slack presentation with two role-bound PNGs/attachment digests, and fixed authenticated Socket Mode decision ingress
+- pin every secret-bearing native helper to root-owned runtime config, executable parent safety, and its expected service UID before Keychain access
 - add durable grace/abort/replay/crash semantics, body-free authority audit, adversarial tests, and exact-head public-source scrub
 - parameterize all production identity, policy, and deployment values; no credentials or personal/customer data are committed
 

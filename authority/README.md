@@ -8,21 +8,21 @@ This directory owns the public, deployable source for the exact-send authority. 
 |---|---|---|---|
 | `slack-issuer` | `create`, `status`, `cancel`, authenticated Socket Mode decision | Slack app token + bot token | Ed25519 private key, Superhuman credential |
 | `approval-signer` | semantic `issue` only | Ed25519 private key | Slack secret, Superhuman credential |
-| `send-executor` | `import-attestation`, `execute`, `status`, `abort` | none | Slack secret, Ed25519 private key |
-| native credential bridge | `render`, conditional `send` | Superhuman token | Slack secret, signer key |
+| `send-executor` | issuer-only `prepare`; broker-only `execute`, `status`, `abort` on a separate socket | none | Slack secret, Ed25519 private key |
+| native credential bridge | trusted `prepare`, `render`, conditional `send` | Superhuman token | Slack secret, signer key |
 
-Each service is a separate signed `.app`, launch identity, Unix socket ACL, state directory, and release pin. The signer and issuer receive their secrets through a Keychain-restricted native launcher and an anonymous stdin pipe. The executor can reach the provider credential only through the separately signed native bridge. No API accepts arbitrary bytes to sign, arbitrary commands, URLs, credentials, trust roots, or raw send payloads.
+Each service is a separate signed `.app`, launch identity, Unix socket ACL, state directory, and release pin. Before Keychain access, every native helper verifies a root-owned exact runtime config, its release parent chain, and a pinned effective UID. The signer and issuer stream secrets through anonymous stdin pipes; the executor reaches the provider credential only through the separately signed native bridge. No API accepts arbitrary bytes to sign, caller evidence, arbitrary commands, URLs, credentials, trust roots, or raw send payloads.
 
 The shared source module `common/receipt.mjs` implements the merged flat `shm-approval-receipt/v1` wire contract. Release assembly copies and seals that module independently into each artifact; services do not load mutable code from one another.
 
 ## Approval and execution flow
 
-1. `shm draft attest-render` creates exact private evidence, portable `sha256:` attestation identity, and a content-free `approval_binding`.
-2. `slack-issuer.create` accepts an inline attestation bundle (record plus digest-checked PNG bytes), recomputes the binding, posts an exhaustive representation of every reviewed outgoing field, uploads every screenshot, then retains only binding/presentation/context hashes, nonce, and expiry.
+1. `slack-issuer.create` accepts only account/thread/draft/delay semantics and calls the executor's issuer-only prepare socket. Caller evidence bytes are rejected.
+2. The signed credential bridge runs the allowlisted live renderer under the executor UID, returns raw Python identity bytes plus exactly `compose` and `outgoing` PNGs, and the executor durably marks that ID as trusted-prepared. The issuer recomputes the binding, posts every reviewed outgoing field plus attachment digests, uploads both screenshots, then retains only binding/presentation/context hashes, nonce, and expiry.
 3. The issuer consumes Slack Socket Mode directly. It validates fixed team/app/channel, ordinary unedited human thread-message shape, configured principal, exact keyword/nonce, immutable `event_id`, and pending state. The decision is committed before the Socket Mode acknowledgement; no proxy or caller-selected request ID participates.
 4. The issuer commits `approved_waiting_signature`, acknowledges Slack, then asks the signer to construct and sign the flat receipt. Startup recovery resumes the same semantic signing request after a crash.
-5. The executor's import API verifies the receipt against the portable attestation and inline screenshot bytes, rewrites non-authoritative local paths, and stores the result under an executor-owned content-addressed directory. Execution accepts only the attestation ID, never a caller path.
-6. The executor independently verifies the receipt, execution identifiers, imported attestation, and a fresh `shm draft get` binding.
+5. Agent-facing confirm submits only receipt plus account/thread/draft identifiers. The executor independently verifies the receipt, execution identifiers, its own trusted-prepared marker/artifacts, and a fresh `shm draft get` binding. Execution accepts only the receipt-bound attestation ID, never a caller path or bundle.
+6. The prepare and execute APIs use separate service-owned setgid runtime directories and peer groups; the issuer cannot reach execute, and the broker cannot inject prepare evidence.
 7. It durably starts a **minimum 60-second cancellable grace period**. `POST /v1/abort/:receipt_id` wins only while state is `grace`.
 8. After grace, it rerenders, compares revision, fingerprint, and every binding field, then atomically changes `grace -> claimed` only if the receipt remains unexpired. Definitive pre-claim failures transition durably to `failed` or `expired`.
 9. The credential bridge invokes `shm draft send --if-revision ... --expected-draft-fingerprint ...`. Agent-facing `shm send --confirm` is only a Unix-socket client to this journal; there is no second local claim or raw-send path.
@@ -42,7 +42,7 @@ swiftc -typecheck authority/approval-signer/native/RuntimeSecretLauncher.swift
 swiftc -typecheck authority/send-executor/native/CredentialBridge.swift
 ```
 
-Tests use generated ephemeral keys, synthetic `.test` identities, temporary SQLite databases, and fake providers. Unit tests advance a virtual clock across grace; they do not claim a real-time production E2E. A process-level cross-language test imports portable screenshot evidence and verifies it through Python's executor path. Live Socket Mode, launchd users/ACLs, a real 60-second wait, native bridge execution, and provider behavior remain activation checks.
+Tests use generated ephemeral keys, synthetic `.test` identities, temporary SQLite databases, and fake providers. Unit tests advance a virtual clock across grace; they do not claim a real-time production E2E. Cross-runtime tests cover raw Python identity bytes containing floats/non-BMP keys, required PNG roles, semantic-only preparation, direct secret-helper rejection, and executor-prepared rerender without a worker HMAC. Live Socket Mode, launchd users/ACLs, a real 60-second wait, native bridge execution, and provider behavior remain activation checks.
 
 ## Production activation gate
 

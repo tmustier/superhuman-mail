@@ -91,7 +91,7 @@ def test_empty_subject_requires_explicit_exact_attestation_policy():
         validated = send.validate(THREAD, DRAFT, account=ACCOUNT["email"])
     executed = send.execute(THREAD, DRAFT, account=ACCOUNT["email"])
     assert validated["errors"][0]["code"] == "SUBJECT_REQUIRED"
-    assert executed["errors"][0]["code"] == "ATTESTATION_REQUIRED"
+    assert executed["errors"][0]["code"] == "APPROVAL_RECEIPT_REQUIRED"
 
 
 def test_validate_is_truthful_about_metadata_only_preflight():
@@ -140,10 +140,10 @@ def test_caller_controlled_approval_reference_cannot_authorize_before_load():
     load.assert_not_called()
 
 
-def test_execute_requires_exact_attestation_before_transport():
+def test_execute_requires_external_receipt_before_transport():
     with patch("superhuman_mail.send.lifecycle.observe", return_value=_observed()):
         with patch("superhuman_mail.send.urllib.request.urlopen") as urlopen:
             result = send.execute(THREAD, DRAFT, account=ACCOUNT["email"])
     assert result["status"] == "failed"
-    assert result["errors"][0]["code"] == "ATTESTATION_REQUIRED"
+    assert result["errors"][0]["code"] == "APPROVAL_RECEIPT_REQUIRED"
     urlopen.assert_not_called()

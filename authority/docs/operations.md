@@ -19,28 +19,30 @@ Never reuse one signing identity across issuer, signer, and executor. The creden
 
 ## Independent ACL matrix
 
-- Broker callers → issuer socket only.
-- Issuer identity → signer socket only.
-- Approved executor callers → executor socket only.
+- Broker callers → issuer semantic-create/status/cancel socket and executor execute/status/abort socket; never prepare.
+- Issuer private group → signer socket and executor prepare socket; never execute.
+- Executor private UID → provider bridge executable and executor state; no Slack/signer secret.
 - Issuer native launcher → Slack app-token/bot-token bundle only.
 - Signer native launcher → Ed25519 private-key item only.
 - Credential bridge designated requirement → Superhuman token item only.
 - Executor daemon → credential bridge execute permission; no direct Keychain item access.
-- Worker identity → none of the secret items, signer socket, bridge executable, provider config, trust policy, imported attestations, or state databases.
+- Worker identity → none of the secret items, signer/preparer sockets, bridge executable, root policy/runtime config, trusted-prepared markers, or state databases.
 
-The public trust-policy directory chain is root-owned and non-writable. Each service state directory is owned by its distinct service UID at `0700`; files are `0600`. A daemon owns its socket and runs with the one peer group as its primary launchd group, allowing `0660` without root or a shared service UID. The credential bridge runs as the executor UID and relies on its executable-designated Keychain ACL, not effective UID 0. Deny supplementary memberships that join boundaries.
+The policy directory chain and content-addressed release parents are root-owned and non-writable. Root-owned exact runtime configs under `authority/release/runtime-config/*.in` pin every helper's expected UID and all semantic configuration; caller environment is ignored. Each service state directory is owned by its distinct service UID at `0700`; files are `0600`.
+
+A root installer creates setgid runtime directories before launch: issuer socket `(owner=issuer, group=broker)`, signer socket `(owner=signer, group=issuer-private)`, render-preparer socket `(owner=executor, group=issuer-private)`, and execute socket `(owner=executor, group=broker)`. Use mode `2710` or stricter with no group write/other access; sockets inherit the narrow peer group and are `0660`. Service launchd primary groups remain their private groups, so no supplementary boundary-joining groups are needed. Daemons verify directory owner/group/mode before unlink/bind. Native helpers verify expected UID, root config, and executable parent chain before Keychain access.
 
 ## Staged rollout
 
 1. Build from a clean reviewed commit; verify three archives on a separate machine.
-2. Create three distinct service UIDs, their peer socket groups, service-owned `0700` state directories, and a separate root-owned non-writable policy directory. Render templates without committing output.
+2. Create three distinct service UIDs/private groups, the broker group, service-owned `0700` state directories, the four setgid runtime directories above, and a root-owned non-writable policy directory. Render launchd/runtime templates without committing output.
 3. Install artifacts into a content-addressed release directory; verify signatures and hashes after copy; atomically select `current`.
-4. Install `/Library/Application Support/superhuman-mail/policy/send-executor-trust.json` with one active root tuple and the configured approver principal. The exact schema is `{callerGid, roots:[{issuer,keyId,publicKeyPem,allowedApprovers}]}` and accepts at most two roots. Do not provision private material yet.
+4. Install the four exact root-owned runtime configs plus `/Library/Application Support/superhuman-mail/policy/send-executor-trust.json`. Its schema is `{callerGid,preparerGid,roots:[{issuer,keyId,publicKeyPem,allowedApprovers}]}` and accepts at most two roots. Validate expected UIDs, directory GIDs/modes, no worker traversal of release/service-private parents, and direct worker invocation failure before provisioning private material.
 5. Bootstrap signer with no key and confirm fail-closed behavior; boot it out.
 6. Provision signer key with a Keychain ACL for the signer launcher only. Start signer, then issuer with its own secret and ACL.
-7. Start executor without provider credential. Run fake-provider and render-only probes; all send attempts must fail closed.
+7. Start executor without provider credential. Prove broker cannot connect to prepare, issuer cannot connect to execute, and all render/send attempts fail closed.
 8. Provision provider credential with a designated-requirement ACL for the signed bridge only. Verify raw worker and executor-daemon Keychain reads fail.
-9. Validate issuer → signer → executor against a fake provider, including a real 60-second abort and restart during grace.
+9. Validate trusted prepare → exhaustive Slack presentation → signer → execute against a fake provider, including `shm executor status/abort`, a real 60-second abort, and restart during grace.
 10. Separately approve one controlled synthetic sink send. Never broaden recipients during activation.
 
 Installation, credential provisioning, `launchctl bootstrap`, and live send are deliberately not performed by repository tests or release assembly.

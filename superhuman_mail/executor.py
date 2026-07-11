@@ -7,10 +7,10 @@ bridge is the only production process that may supply Superhuman credentials.
 """
 from __future__ import annotations
 
+import base64
 import hmac
-import json
 import os
-import re
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -20,6 +20,11 @@ from . import approval, attestation, lifecycle, send
 CONTRACT_VERSION = "shm-executor/v1"
 CONTRACT = {
     "schema": CONTRACT_VERSION,
+    "prepare": {
+        "command": "draft prepare",
+        "result": "trusted-attestation-bundle",
+        "requires": ["account", "thread_id", "draft_id", "delay"],
+    },
     "render": {
         "command": "draft get",
         "result": "content-free-render-envelope",
@@ -61,28 +66,55 @@ def _load_bound(
     thread_id: str,
     draft_id: str,
 ) -> dict[str, Any]:
-    import_root_value = os.environ.get("SHM_EXECUTOR_IMPORTS_DIR")
-    if import_root_value:
-        reference_text = str(reference)
-        if re.fullmatch(r"sha256:[a-f0-9]{64}", reference_text) is None:
-            raise ExecutorContractError("ATTESTATION_ID_INVALID", "Executor accepts only a canonical attestation ID")
-        import_root = Path(import_root_value)
-        record_path = import_root / reference_text.removeprefix("sha256:") / "attestation.json"
-        try:
-            record = json.loads(record_path.read_text())
-        except (OSError, json.JSONDecodeError) as exc:
-            raise ExecutorContractError("ATTESTATION_NOT_IMPORTED", "Attestation was not semantically imported") from exc
-        if not isinstance(record, dict) or record.get("attestation_id") != reference_text:
-            raise ExecutorContractError("ATTESTATION_IMPORT_INVALID", "Imported attestation identity is malformed")
-        attestation.verify_imported(record, import_root=import_root)
-    else:
-        record = attestation.load(reference)
-        attestation.verify(record)
+    record = attestation.load(reference)
+    attestation.verify_for_executor(record)
     if str(record.get("thread_id")) != thread_id or str(record.get("draft_id")) != draft_id:
         raise ExecutorContractError("DRAFT_BINDING_MISMATCH", "Attestation belongs to another draft")
     if str((record.get("account") or {}).get("email", "")).lower() != account.lower():
         raise ExecutorContractError("ACCOUNT_BINDING_MISMATCH", "Attestation belongs to another account")
     return record
+
+
+def prepare_attestation(
+    thread_id: str,
+    draft_id: str,
+    *,
+    account: str,
+    delay: int,
+    renderer: attestation.Renderer | None = None,
+) -> dict[str, Any]:
+    """Create evidence inside the credential authority, never from worker bytes."""
+    if delay < 0:
+        raise ExecutorContractError("INVALID_DELAY", "Delay must be non-negative")
+    state = Path(os.environ.get("SHM_STATE_DIR") or "")
+    if not state.is_absolute():
+        raise ExecutorContractError("EXECUTOR_STATE_REQUIRED", "Executor state directory must be absolute")
+    prepare_root = state / "prepared-renders"
+    prepare_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    output = Path(tempfile.mkdtemp(prefix="render-", dir=prepare_root))
+    record = attestation.create(
+        thread_id,
+        draft_id,
+        account=account,
+        output_dir=output,
+        delay=delay,
+        renderer=renderer,
+    )
+    identity = attestation.canonical_bytes(attestation.identity_content(record))
+    screenshots = []
+    for item in record["screenshots"]:
+        data = Path(item["path"]).read_bytes()
+        screenshots.append({
+            "role": item["role"],
+            "sha256": item["sha256"],
+            "media_type": "image/png",
+            "data_base64": base64.b64encode(data).decode(),
+        })
+    return {
+        "record": {key: value for key, value in record.items() if key != "artifact_path"},
+        "identity_base64": base64.b64encode(identity).decode(),
+        "screenshots": screenshots,
+    }
 
 
 def revision_id(record: dict[str, Any]) -> str:

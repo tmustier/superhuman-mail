@@ -28,7 +28,7 @@ The trusted broker exposes semantic operations only:
 
 It never exposes `sign(bytes)`, private-key export, arbitrary approver selection, or caller-controlled trust-root configuration.
 
-`approval.create` accepts the content-free `approval_binding` plus an inline private `attestation_bundle`: the complete attestation record and ordered `{sha256, media_type, data_base64}` PNG artifacts. `shm attestation show` remains deliberately content-free and is not the broker input. Local paths are presentation metadata only and never cross the executor API as authority.
+`approval.create` accepts only `{account, thread_id, draft_id, delay_seconds, ttl_seconds}`. It calls the executor's issuer-only prepare socket; caller-provided bindings, records, screenshots, paths, or payload bytes are schema errors. The signed credential bridge runs the allowlisted live renderer and returns raw Python identity bytes plus exactly two role-bound PNGs (`compose`, `outgoing`). The executor validates and marks that evidence trusted-prepared before returning it to the issuer. `shm attestation show` remains observational and is never broker authority.
 
 The binding covers:
 
@@ -41,7 +41,7 @@ The binding covers:
 - reserved send-identity hash;
 - delay and scheduled-send hash.
 
-The issuer independently verifies the portable attestation ID and screenshot bytes, recomputes the binding, posts an exhaustive representation of every reviewed outgoing field, and uploads every attested render screenshot to its fixed policy channel. It then records the request, random nonce, ≤5-minute expiry, configured Slack principal, presentation digest, and returned team/app/channel/thread hashes. Evidence that does not reproduce the requested binding fails before presentation; caller labels or summaries are not authoritative.
+The issuer independently validates the trusted-preparer bundle, recomputes the binding, posts an exhaustive representation of every reviewed outgoing field plus attachment digests, and uploads both role-bound screenshots to its fixed policy channel. It then records the request, random nonce, ≤5-minute expiry, configured Slack principal, presentation digest, and returned team/app/channel/thread hashes. Prepared evidence that does not match the semantic request fails before presentation.
 
 ## Authenticated decision
 
@@ -91,7 +91,7 @@ shm send --confirm THREAD DRAFT \
   --wait 120
 ```
 
-Agent-facing core verifies the local attestation and receipt, sends an inline bundle to the fixed executor Unix socket, then requests execution by canonical attestation ID. The executor re-verifies the receipt/binding, imports screenshot bytes into executor-owned content-addressed storage, and performs the mandatory renderer probe. Its one canonical SQLite journal starts the 60-second abort grace and later uses `BEGIN IMMEDIATE` to recheck expiry and atomically move `grace -> claimed` once. There is no local receipt-consumption journal or desktop transport in `shm send --confirm`.
+Agent-facing core submits only receipt plus account/thread/draft identifiers to the broker-only execute socket. The executor re-verifies the receipt/binding, its own trusted-prepared marker/artifacts, and the mandatory renderer probe. Its one canonical SQLite journal starts the 60-second abort grace and later uses `BEGIN IMMEDIATE` to recheck expiry and atomically move `grace -> claimed` once. There is no local receipt-consumption journal, caller evidence import, or desktop transport in `shm send --confirm`. `shm executor status|abort RECEIPT_ID` exposes canonical grace/reconciliation control.
 
 A crash cannot create a second claim. After `claimed`, retry is reconciliation-only; interrupted claims become permanently `unknown`. Definitive pre-claim failures become durable `failed` or `expired` rows.
 

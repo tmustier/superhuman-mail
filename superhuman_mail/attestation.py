@@ -6,6 +6,7 @@ import getpass
 import hashlib
 import hmac
 import json
+import math
 import os
 import secrets
 import stat
@@ -331,6 +332,28 @@ def _unsigned(record: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _validate_portable_identity(value: Any) -> None:
+    if value is None or isinstance(value, (str, bool)):
+        return
+    if isinstance(value, int):
+        if abs(value) > 2**53 - 1:
+            raise AttestationError("ATTESTATION_NONPORTABLE", "Attestation integer exceeds the portable JSON range")
+        return
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise AttestationError("ATTESTATION_NONPORTABLE", "Attestation contains a non-finite number")
+        return
+    if isinstance(value, list):
+        for item in value:
+            _validate_portable_identity(item)
+        return
+    if isinstance(value, dict) and all(isinstance(key, str) for key in value):
+        for item in value.values():
+            _validate_portable_identity(item)
+        return
+    raise AttestationError("ATTESTATION_NONPORTABLE", "Attestation contains a non-JSON value")
+
+
 def identity_content(record: dict[str, Any]) -> dict[str, Any]:
     """Portable attestation identity; local screenshot paths are not authority."""
     unsigned = _unsigned(record)
@@ -339,18 +362,21 @@ def identity_content(record: dict[str, Any]) -> dict[str, Any]:
         unsigned = {
             **unsigned,
             "screenshots": [
-                {"sha256": item.get("sha256")}
+                {"role": item.get("role"), "sha256": item.get("sha256")}
                 if isinstance(item, dict)
                 else item
                 for item in screenshots
             ],
         }
+    _validate_portable_identity(unsigned)
     return unsigned
 
 
 def _seal(record: dict[str, Any]) -> dict[str, Any]:
     unsigned = _unsigned(record)
     attestation_id = sha256(canonical_bytes(identity_content(unsigned)))
+    if os.environ.get("SHM_EXECUTOR_PREPARE_MODE") == "1":
+        return {**unsigned, "attestation_id": attestation_id, "signature": "executor-prepared:v1"}
     signature_content = {**identity_content(unsigned), "attestation_id": attestation_id}
     signature = hmac.new(_attestation_key(create=True), canonical_bytes(signature_content), hashlib.sha256).hexdigest()
     return {**unsigned, "attestation_id": attestation_id, "signature": f"hmac-sha256:{signature}"}
@@ -377,10 +403,10 @@ def _validate_record_structure(record: dict[str, Any]) -> None:
         raise AttestationError("ATTESTATION_INVALID", "Attestation fingerprint is malformed")
     if not all((record["renderer"].get("adapter_version"), record["renderer"].get("app_version"), record["renderer"].get("web_version"))):
         raise AttestationError("ATTESTATION_INVALID", "Attestation renderer binding is malformed")
-    if not isinstance(record.get("screenshots"), list) or any(
+    if not isinstance(record.get("screenshots"), list) or len(record["screenshots"]) != 2 or any(
         not isinstance(item, dict) for item in record["screenshots"]
-    ):
-        raise AttestationError("ATTESTATION_INVALID", "Attestation screenshots are malformed")
+    ) or [item.get("role") for item in record["screenshots"]] != ["compose", "outgoing"]:
+        raise AttestationError("ATTESTATION_INVALID", "Attestation requires compose and outgoing screenshots")
     if not isinstance(record.get("send_eligible"), bool):
         raise AttestationError("ATTESTATION_INVALID", "Attestation eligibility is malformed")
     attestation_id = str(record.get("attestation_id") or "")
@@ -428,41 +454,46 @@ def verify(record: dict[str, Any], *, require_unexpired: bool = True) -> None:
         raise AttestationError("ATTESTATION_TAMPERED", "Attestation signature is invalid")
 
 
-def verify_imported(record: dict[str, Any], *, import_root: Path, require_unexpired: bool = True) -> None:
-    """Verify a receipt-authorized copy inside executor-owned storage.
-
-    The issuer receipt authenticates the portable identity. This check never
-    treats a caller path or the creating user's local HMAC as executor trust.
-    """
-    expected_dir = import_root.resolve() / str(record.get("attestation_id", "")).removeprefix("sha256:")
-    try:
-        expected_dir = expected_dir.resolve(strict=True)
-        root = import_root.resolve(strict=True)
-    except OSError as exc:
-        raise AttestationError("ATTESTATION_IMPORT_INVALID", "Executor attestation import is unavailable") from exc
-    if expected_dir.parent != root:
-        raise AttestationError("ATTESTATION_IMPORT_INVALID", "Executor attestation import escaped its fixed root")
-    screenshots_dir = expected_dir / "screenshots"
-    for path in [root, expected_dir, screenshots_dir]:
-        metadata = path.stat()
+def verify_prepared(record: dict[str, Any], *, marker_root: Path, require_unexpired: bool = True) -> None:
+    """Verify evidence created and marked by the executor's trusted render path."""
+    attestation_id = str(record.get("attestation_id") or "")
+    if record.get("signature") != "executor-prepared:v1":
+        raise AttestationError("ATTESTATION_PREPARED_INVALID", "Attestation is not executor-prepared")
+    state = marker_root.parent
+    record_path = state / "attestations" / f"{attestation_id}.json"
+    marker_path = marker_root / f"{attestation_id.removeprefix('sha256:')}.json"
+    prepare_root = state / "prepared-renders"
+    for directory in (state, marker_root, prepare_root, state / "attestations"):
+        metadata = directory.stat()
         if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.geteuid() or metadata.st_mode & 0o022:
-            raise AttestationError("ATTESTATION_IMPORT_UNSAFE", "Executor import storage ownership or mode is unsafe")
-    record_path = expected_dir / "attestation.json"
-    record_metadata = record_path.lstat()
-    if not stat.S_ISREG(record_metadata.st_mode) or record_metadata.st_uid != os.geteuid() or record_metadata.st_mode & 0o077:
-        raise AttestationError("ATTESTATION_IMPORT_UNSAFE", "Imported attestation ownership or mode is unsafe")
+            raise AttestationError("ATTESTATION_PREPARED_UNSAFE", "Prepared attestation storage is unsafe")
+    for path in (record_path, marker_path):
+        metadata = path.lstat()
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.geteuid() or metadata.st_mode & 0o077:
+            raise AttestationError("ATTESTATION_PREPARED_UNSAFE", "Prepared attestation marker or record is unsafe")
+    try:
+        marker = json.loads(marker_path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise AttestationError("ATTESTATION_PREPARED_INVALID", "Prepared attestation marker is invalid") from exc
+    if marker != {"schema": "shm-trusted-prepared/v1", "attestation_id": attestation_id}:
+        raise AttestationError("ATTESTATION_PREPARED_INVALID", "Prepared attestation marker does not match")
+    prepare_root_resolved = prepare_root.resolve(strict=True)
     for screenshot in record.get("screenshots") or []:
-        path = Path(str(screenshot.get("path") or ""))
-        try:
-            resolved = path.resolve(strict=True)
-        except OSError as exc:
-            raise AttestationError("ATTESTATION_ARTIFACT_MISMATCH", "Imported screenshot is unavailable") from exc
-        if resolved.parent != expected_dir / "screenshots":
-            raise AttestationError("ATTESTATION_IMPORT_INVALID", "Imported screenshot path is outside its sealed directory")
+        resolved = Path(str(screenshot.get("path") or "")).resolve(strict=True)
+        if prepare_root_resolved not in resolved.parents:
+            raise AttestationError("ATTESTATION_PREPARED_INVALID", "Prepared screenshot escaped trusted storage")
         metadata = resolved.stat()
         if metadata.st_uid != os.geteuid() or metadata.st_mode & 0o077:
-            raise AttestationError("ATTESTATION_IMPORT_UNSAFE", "Imported screenshot ownership or mode is unsafe")
+            raise AttestationError("ATTESTATION_PREPARED_UNSAFE", "Prepared screenshot ownership or mode is unsafe")
     _verify_content_and_artifacts(record, require_unexpired=require_unexpired)
+
+
+def verify_for_executor(record: dict[str, Any], *, require_unexpired: bool = True) -> None:
+    marker = os.environ.get("SHM_EXECUTOR_TRUSTED_PREPARED_DIR")
+    if marker:
+        verify_prepared(record, marker_root=Path(marker), require_unexpired=require_unexpired)
+    else:
+        verify(record, require_unexpired=require_unexpired)
 
 
 def _artifact_dir() -> Path:
@@ -553,7 +584,7 @@ def show_safe(
         "approval_binding": _approval.binding_for_attestation(record),
         "renderer": dict(record.get("renderer") or {}),
         "screenshots": [
-            {"path": item.get("path"), "sha256": item.get("sha256")}
+            {"role": item.get("role"), "path": item.get("path"), "sha256": item.get("sha256")}
             for item in (record.get("screenshots") or [])
         ],
         "summary": {
@@ -570,13 +601,19 @@ def show_safe(
 
 
 def _screenshot_records(result: dict[str, Any]) -> list[dict[str, str]]:
+    raw_paths = result.get("screenshots") or []
+    if not isinstance(raw_paths, list) or len(raw_paths) != 2:
+        raise AttestationError("RENDERER_FAILED", "Renderer must return compose and outgoing screenshots")
     records = []
-    for raw_path in result.get("screenshots") or []:
+    for role, raw_path in zip(("compose", "outgoing"), raw_paths, strict=True):
         path = Path(str(raw_path))
         if not path.exists():
             raise AttestationError("RENDERER_FAILED", f"Renderer screenshot is missing: {path}")
+        data = path.read_bytes()
+        if not data.startswith(b"\x89PNG\r\n\x1a\n"):
+            raise AttestationError("RENDERER_FAILED", f"Renderer {role} screenshot is not a PNG")
         private_file(path)
-        records.append({"path": str(path), "sha256": sha256(path.read_bytes())})
+        records.append({"role": role, "path": str(path), "sha256": sha256(data)})
     return records
 
 
@@ -789,7 +826,7 @@ def revalidate_for_send(
     """Second no-write probe; return only freshly verified payload bytes."""
     from . import send  # avoid import cycle
 
-    verify(record)
+    verify_for_executor(record)
     renderer = renderer or CdpRenderer()
     output_dir = output_dir or (_artifact_dir() / str(record["attestation_id"]) / "send-time")
     if record["account"]["email"].lower() != account.lower():
