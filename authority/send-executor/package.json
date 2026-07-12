@@ -1,0 +1,8 @@
+{
+  "name": "@superhuman-mail/send-executor",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": { "shm-send-executor": "daemon.mjs" },
+  "engines": { "node": ">=24" }
+}

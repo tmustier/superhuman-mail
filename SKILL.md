@@ -54,14 +54,13 @@ Use this workflow every time:
 1. create or inspect the draft
 2. run lifecycle preflight: `shm send --dry-run ... --account EMAIL`
 3. open that exact draft in a CDP-enabled Superhuman app without editing it
-4. run `shm draft attest-render ... --account EMAIL --output PRIVATE_DIR`
-5. verify/display only `shm attestation show ...` safe metadata and exact-render screenshots
-6. show the complete intended message to the user through the trusted approval broker
-7. obtain its short-lived Ed25519 receipt bound to the exact `approval_binding`
-8. verify it with `shm approval verify RECEIPT --attestation ID`
-9. let the trusted executor run the outbound gate/grace period and `shm send --confirm ... --approval-receipt RECEIPT`; then wait for `sent_provider_confirmed`
+4. optionally run local `shm draft attest-render ...` for observation only; it is never approval authority
+5. request approval using account/thread/draft/delay semantics only; the broker obtains its authoritative render from the trusted prepare socket
+6. review the complete trusted Slack presentation, both PNG roles, and attachment digests
+7. obtain the short-lived Ed25519 receipt bound to that exact `approval_binding`
+8. let the trusted executor run `shm send --confirm ... --approval-receipt RECEIPT`; use `shm executor status|abort RECEIPT_ID` during grace and require `state: provider_confirmed`
 
-Never treat draft timestamps, labels, HTTP acceptance, `sent_backend_confirmed`, or exit `4` as a completed send. Never create CRM/follow-up work until `provider_confirmed: true`. Caller-supplied `--approval-ref` never authorizes. Until a trusted issuer root and credential-isolated executor are deployed, confirm must fail closed and unattended agents must not have Superhuman transport credentials.
+Never treat draft timestamps, labels, HTTP acceptance, `sent_backend_confirmed`, or exit `4` as a completed send. Never create CRM/follow-up work until `provider_confirmed: true`. Caller-supplied `--approval-ref` never authorizes. Until a trusted issuer root and credential-isolated executor are deployed, confirm must fail closed and unattended agents must not have Superhuman transport credentials. `shm draft get` and conditional `shm draft send` are signed credential-bridge internals, not agent-callable fallback commands.
 
 ## Command surface
 
@@ -145,7 +144,7 @@ shm attestation show <id-or-path> --account email --thread-id <thread_id> --draf
 shm approval verify <receipt.json> --attestation <id-or-path>
 shm send status <thread_id> <draft_id> --account email [--wait seconds]
 # The trusted executor invokes this only with an externally signed exact receipt:
-shm send --confirm <thread_id> <draft_id> --account email --attestation <id-or-path> --approval-receipt <receipt.json> [--wait seconds]
+shm send --confirm <thread_id> <draft_id> --account email --approval-receipt <receipt.json> [--wait seconds]
 shm setup [--config path] [--email address]
 shm doctor
 shm schema [command]
@@ -171,7 +170,7 @@ shm draft attest-render <thread_id> <draft_id> --account owner@example.com --out
 shm attestation show <attestation_id> --account owner@example.com --thread-id <thread_id> --draft-id <draft_id>
 ```
 
-After the user explicitly approves, the external broker issues a single-use receipt for the attestation's exact binding. Verify it read-only, then let the credential-isolated trusted executor route the attestation and receipt through the outbound send gate. Do not invoke local/raw transport outside that boundary. Reconcile with `shm send status ...` until provider-confirmed.
+The external broker accepts only account/thread/draft/delay semantics, obtains its authoritative attestation from the trusted prepare socket, and issues a single-use receipt after explicit approval. Then let the credential-isolated executor consume that receipt; do not supply evidence bytes or invoke local/raw transport. Use `shm executor status RECEIPT_ID` during grace/reconciliation and require `provider_confirmed`.
 
 ### 2. Get read receipts / recent opens
 

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>org.superhuman-mail.send-executor</string>
+  <key>ProgramArguments</key><array><string>@RELEASE_ROOT@/send-executor.app/Contents/MacOS/node</string><string>@RELEASE_ROOT@/send-executor.app/Contents/Resources/send-executor/daemon.mjs</string></array>
+  <key>UserName</key><string>@EXECUTOR_USER@</string>
+  <key>GroupName</key><string>@EXECUTOR_PRIVATE_GROUP@</string>
+  <key>KeepAlive</key><true/><key>RunAtLoad</key><true/>
+</dict></plist>

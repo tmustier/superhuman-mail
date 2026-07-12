@@ -1,0 +1,12 @@
+{
+  "callerGid": @BROKER_CALLER_GID_INTEGER@,
+  "preparerGid": @ISSUER_PRIVATE_GID_INTEGER@,
+  "roots": [
+    {
+      "issuer": "@ISSUER_NAME@",
+      "keyId": "@KEY_ID@",
+      "publicKeyPem": "@PUBLIC_KEY_PEM_JSON_ESCAPED@",
+      "allowedApprovers": ["@APPROVER_PRINCIPAL@"]
+    }
+  ]
+}

@@ -9,7 +9,9 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import os
 import subprocess
+import sys
 import time
 import urllib.request
 from typing import Any
@@ -76,8 +78,30 @@ def _get_session_cookie() -> str:
 _token_cache: dict[str, Any] = {}
 
 
+def _runtime_id_token() -> str | None:
+    """Read a credential-isolated executor token from stdin exactly once.
+
+    The secret is never accepted in an environment variable or command-line
+    argument. The signed native credential bridge sets only this boolean flag,
+    writes the token through an anonymous pipe, and closes it.
+    """
+    if os.environ.get("SHM_AUTH_TOKEN_STDIN") != "1":
+        return None
+    cached = _token_cache.get("runtime_id_token")
+    if cached:
+        return str(cached)
+    value = sys.stdin.readline(16 * 1024).strip()
+    if not value or len(value) >= 16 * 1024 or any(ch.isspace() for ch in value):
+        raise RuntimeError("Invalid runtime Superhuman credential")
+    _token_cache["runtime_id_token"] = value
+    return value
+
+
 def _get_id_token() -> str:
-    """Exchange session cookie for a fresh ID token (cached until near-expiry)."""
+    """Return an isolated runtime token or exchange the desktop session cookie."""
+    runtime = _runtime_id_token()
+    if runtime:
+        return runtime
     if "id_token" in _token_cache and "expires" in _token_cache:
         if time.time() < float(_token_cache["expires"]):
             return str(_token_cache["id_token"])

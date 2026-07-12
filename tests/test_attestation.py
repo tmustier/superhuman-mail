@@ -78,6 +78,12 @@ def _payload(html="<div>Hello</div><br><div>Signature</div>"):
         "subject": "Fixture",
         "html_body": html,
         "attachments": [],
+        "scheduled_for": None,
+        "abort_on_reply": False,
+        "current_message_ids": ["message_earlier"],
+        "mail_merge_recipients": [],
+        "sensitivity_label_id": None,
+        "sensitivity_tenant_id": None,
     }
 
 
@@ -95,8 +101,8 @@ class FakeRenderer:
         output_dir.mkdir(parents=True, exist_ok=True)
         compose = output_dir / "compose.png"
         outgoing = output_dir / "outgoing.png"
-        compose.write_bytes(b"compose")
-        outgoing.write_bytes(b"outgoing")
+        compose.write_bytes(b"\x89PNG\r\n\x1a\ncompose")
+        outgoing.write_bytes(b"\x89PNG\r\n\x1a\noutgoing")
         return {
             "account_email": ACCOUNT["email"],
             "thread_id": THREAD,
@@ -152,6 +158,7 @@ def test_bundled_renderer_declares_versioned_payload_contract():
         for origin, routes in contract["read_only_post_routes"].items()
     } == attestation._READ_ONLY_POST_ROUTES
     assert contract["reminder"] == "persisted_draft_only_current_build"
+    assert set(contract["outgoing_fields"]) == attestation.OUTGOING_FIELDS
     assert "html_body" in contract["outgoing_fields"]
     assert "reminder" not in contract["outgoing_fields"]
 
@@ -213,6 +220,8 @@ def test_create_binds_exact_source_editor_payload_versions_and_screenshots(tmp_p
     record = _create(tmp_path, renderer)
     assert record["send_eligible"] is True
     assert record["confidence"] == "exact_superhuman_renderer"
+    assert record["attestation_id"].startswith("sha256:")
+    assert len(record["attestation_id"]) == 71
     assert record["superhuman_id"] == SID
     assert record["fingerprint"]["fields"]["outgoing_payload"] == attestation.sha256(
         attestation.canonical_bytes(_payload())
@@ -268,6 +277,13 @@ def test_safe_show_reports_valid_but_expired_as_unusable(tmp_path):
     assert summary["signature_valid"] is True
     assert summary["expired"] is True
     assert summary["usable"] is False
+
+
+@pytest.mark.parametrize("value", [2**53, float("nan"), float("inf")])
+def test_nonportable_numeric_identity_values_fail_before_sealing(value):
+    with pytest.raises(attestation.AttestationError) as caught:
+        attestation._seal({"signature_settings": {"value": value}, "screenshots": []})
+    assert caught.value.code == "ATTESTATION_NONPORTABLE"
 
 
 def test_malformed_attestation_returns_typed_invalid_error():
@@ -400,6 +416,36 @@ def test_stale_source_blocks_before_second_probe(tmp_path):
             attestation.revalidate_for_send(record, account=ACCOUNT["email"], renderer=renderer)
     assert caught.value.code == "STALE_ATTESTATION"
     assert renderer.calls == []
+
+
+def test_executor_prepared_record_rerenders_without_worker_hmac(monkeypatch, tmp_path):
+    state = tmp_path / "state"
+    prepared = state / "prepared-renders" / "render-fixture"
+    prepared.mkdir(parents=True, mode=0o700)
+    monkeypatch.setenv("SHM_EXECUTOR_PREPARE_MODE", "1")
+    with patch("superhuman_mail.send._superhuman_id", return_value=SID):
+        with patch("superhuman_mail.send._preflight", side_effect=[_preflight(), _preflight()]):
+            record = attestation.create(
+                THREAD, DRAFT, account=ACCOUNT["email"], output_dir=prepared, renderer=FakeRenderer(),
+            )
+    assert record["signature"] == "executor-prepared:v1"
+    marker_root = state / "trusted-prepared"
+    marker_root.mkdir(mode=0o700)
+    marker = marker_root / f"{record['attestation_id'][7:]}.json"
+    marker.write_text(json.dumps({"schema": "shm-trusted-prepared/v1", "attestation_id": record["attestation_id"]}))
+    marker.chmod(0o600)
+    monkeypatch.delenv("SHM_EXECUTOR_PREPARE_MODE")
+    monkeypatch.setenv("SHM_EXECUTOR_TRUSTED_PREPARED_DIR", str(marker_root))
+    monkeypatch.setattr(attestation, "_attestation_key", lambda **_kwargs: (_ for _ in ()).throw(AssertionError("HMAC must not be read")))
+    with patch("superhuman_mail.send._preflight", side_effect=[_preflight(), _preflight()]):
+        verified = attestation.revalidate_for_send(
+            record, account=ACCOUNT["email"], renderer=FakeRenderer(), output_dir=state / "send-time",
+        )
+    assert verified["fingerprint"]["exact"] == record["fingerprint"]["exact"]
+    marker.unlink()
+    with pytest.raises(attestation.AttestationError) as caught:
+        attestation.verify_prepared(record, marker_root=marker_root)
+    assert caught.value.code == "ATTESTATION_PREPARED_INVALID"
 
 
 def test_renderer_payload_drift_after_approval_blocks(tmp_path):

@@ -1,0 +1,8 @@
+{
+  "name": "@superhuman-mail/slack-issuer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": { "shm-slack-issuer": "daemon.mjs" },
+  "engines": { "node": ">=24" }
+}

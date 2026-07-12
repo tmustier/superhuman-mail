@@ -1,6 +1,6 @@
 # Draft lifecycle and render attestation
 
-**Status:** proposed design  
+**Status:** historical RCA/design record; exact approval/execution details are superseded by [`approval-receipt-issuer-contract.md`](approval-receipt-issuer-contract.md) and [`../authority/README.md`](../authority/README.md)
 **Date:** 2026-07-10  
 **Scope:** `superhuman-mail` lifecycle reads, sends, and exact-render approval  
 **Safety of this investigation:** read-only against live mail after the incident; no drafts, comments, schedules, or sends were created by the RCA

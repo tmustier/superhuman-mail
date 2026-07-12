@@ -141,9 +141,9 @@ def _validate_structure(record: dict[str, Any]) -> None:
         raise ApprovalError("APPROVAL_RECEIPT_INVALID", "Approval receipt approver evidence is malformed")
 
 
-def _read_system_trust_store() -> dict[str, dict[str, Any]]:
+def _read_system_trust_store() -> list[dict[str, Any]]:
     if not TRUST_STORE_PATH.exists():
-        return {}
+        return []
     try:
         current = TRUST_STORE_PATH.parent
         while current != current.parent:
@@ -172,19 +172,37 @@ def _read_system_trust_store() -> dict[str, dict[str, Any]]:
         raise
     except (OSError, json.JSONDecodeError) as exc:
         raise ApprovalError("APPROVAL_TRUST_UNAVAILABLE", "Cannot read the system approval trust store") from exc
-    if not isinstance(value, dict) or value.get("schema") != TRUST_SCHEMA or not isinstance(value.get("issuers"), dict):
+    if not isinstance(value, dict) or set(value) != {"schema", "roots"} or value.get("schema") != TRUST_SCHEMA:
         raise ApprovalError("APPROVAL_TRUST_UNAVAILABLE", "System approval trust store is malformed")
-    return value["issuers"]
+    roots = value.get("roots")
+    if not isinstance(roots, list) or not 1 <= len(roots) <= 2:
+        raise ApprovalError("APPROVAL_TRUST_UNAVAILABLE", "System approval trust store must contain one or two roots")
+    expected = {"issuer", "key_id", "public_key", "allowed_approvers"}
+    identities: set[tuple[str, str]] = set()
+    for root in roots:
+        if not isinstance(root, dict) or set(root) != expected:
+            raise ApprovalError("APPROVAL_TRUST_UNAVAILABLE", "System approval root fields are malformed")
+        identity = (str(root.get("issuer") or ""), str(root.get("key_id") or ""))
+        if not all(identity) or identity in identities:
+            raise ApprovalError("APPROVAL_TRUST_UNAVAILABLE", "System approval roots contain an invalid duplicate")
+        identities.add(identity)
+    return [dict(root) for root in roots]
 
 
-def trusted_issuers() -> dict[str, dict[str, Any]]:
-    roots = {key: dict(value) for key, value in BUILTIN_TRUST_ROOTS.items()}
-    for issuer, configuration in _read_system_trust_store().items():
-        if issuer in roots and roots[issuer] != configuration:
-            raise ApprovalError("APPROVAL_TRUST_CONFLICT", f"Conflicting approval trust root for {issuer}")
-        if not isinstance(configuration, dict):
-            raise ApprovalError("APPROVAL_TRUST_UNAVAILABLE", f"Malformed approval trust root for {issuer}")
-        roots[issuer] = dict(configuration)
+def trusted_issuers() -> list[dict[str, Any]]:
+    roots = [
+        {"issuer": issuer, **dict(configuration)}
+        for issuer, configuration in BUILTIN_TRUST_ROOTS.items()
+    ]
+    for configuration in _read_system_trust_store():
+        identity = (configuration["issuer"], configuration["key_id"])
+        existing = next((root for root in roots if (root.get("issuer"), root.get("key_id")) == identity), None)
+        if existing and existing != configuration:
+            raise ApprovalError("APPROVAL_TRUST_CONFLICT", f"Conflicting approval trust root for {identity[0]}/{identity[1]}")
+        if not existing:
+            roots.append(configuration)
+    if len(roots) > 2:
+        raise ApprovalError("APPROVAL_TRUST_UNAVAILABLE", "Approval trust accepts at most two roots")
     if not roots:
         raise ApprovalError(
             "APPROVAL_TRUST_UNAVAILABLE",
@@ -214,7 +232,7 @@ def verify(
     record: dict[str, Any],
     *,
     attestation: dict[str, Any],
-    roots: dict[str, dict[str, Any]] | None = None,
+    roots: dict[str, dict[str, Any]] | list[dict[str, Any]] | None = None,
     now: datetime | None = None,
     require_unexpired: bool = True,
 ) -> dict[str, Any]:
@@ -225,9 +243,14 @@ def verify(
         raise ApprovalError("APPROVAL_RECEIPT_TAMPERED", "Approval receipt ID does not match canonical content")
 
     roots = roots if roots is not None else trusted_issuers()
-    issuer = roots.get(record["issuer"])
-    if not isinstance(issuer, dict) or issuer.get("key_id") != record["key_id"]:
-        raise ApprovalError("APPROVAL_ISSUER_UNTRUSTED", "Approval receipt issuer/key is not pinned")
+    if isinstance(roots, dict):
+        issuer = roots.get(record["issuer"])
+        if not isinstance(issuer, dict) or issuer.get("key_id") != record["key_id"]:
+            raise ApprovalError("APPROVAL_ISSUER_UNTRUSTED", "Approval receipt issuer/key is not pinned")
+    else:
+        issuer = next((root for root in roots if root.get("issuer") == record["issuer"] and root.get("key_id") == record["key_id"]), None)
+        if not isinstance(issuer, dict):
+            raise ApprovalError("APPROVAL_ISSUER_UNTRUSTED", "Approval receipt issuer/key is not pinned")
     allowed_approvers = issuer.get("allowed_approvers") or []
     if (
         not isinstance(issuer.get("public_key"), str)
@@ -306,22 +329,19 @@ def show_safe(
 ) -> dict[str, Any]:
     """Return content-free typed verification and replay-consumption state."""
     from . import attestation as _attestation
-    from .attempts import AttemptJournal
-
     attestation = _attestation.load(attestation_reference)
     _attestation.verify(attestation)
     receipt = load(reference)
     verified = verify(receipt, attestation=attestation, require_unexpired=False)
-    active_journal = journal if journal is not None else AttemptJournal()
-    consumption = active_journal.get_receipt_consumption(verified["receipt_id"])
+    del journal
     return {
         "authority": AUTHORITY,
         "verified": True,
-        "usable": not verified["expired"] and consumption is None,
+        "usable_for_executor_submission": not verified["expired"],
         "unattended_send_eligible": False,
         "trusted_executor_required": True,
         "expired": verified["expired"],
-        "consumed": consumption is not None,
+        "consumption_state": "query_canonical_executor",
         "receipt_id": verified["receipt_id"],
         "receipt_digest": verified["receipt_digest"],
         "issuer": verified["issuer"],

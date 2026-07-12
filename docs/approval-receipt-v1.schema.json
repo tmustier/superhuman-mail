@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://schemas.nexcade.ai/superhuman-mail/approval-receipt-v1.schema.json",
+  "$id": "urn:superhuman-mail:approval-receipt:v1",
   "title": "Superhuman exact-send approval receipt v1",
   "type": "object",
   "additionalProperties": false,

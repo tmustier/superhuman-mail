@@ -97,7 +97,7 @@ Read status lives in the **Superhuman data** for each message, not in the provid
           }
         ]
       },
-      "readsSharedBy": "thomas@nexcade.ai"
+      "readsSharedBy": "sender@example.com"
     }
   }
 }

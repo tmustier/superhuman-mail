@@ -307,10 +307,10 @@ function expressionFor(request) {
   const payload = JSON.parse(JSON.stringify({
     headers,
     superhuman_id: request.superhuman_id,
-    rfc822_id: renderDraft.getRfc822Id(),
+    rfc822_id: renderDraft.getRfc822Id() ?? null,
     thread_id: threadId,
     message_id: renderDraft.id,
-    in_reply_to: renderDraft.getInReplyTo(),
+    in_reply_to: renderDraft.getInReplyTo() ?? null,
     from: renderDraft.getFrom().toMinimalJson(),
     to: renderDraft.getTo().map(contact => contact.toMinimalJson()),
     cc: renderDraft.getCc().map(contact => contact.toMinimalJson()),
@@ -318,15 +318,15 @@ function expressionFor(request) {
     subject: renderDraft.getSubject(),
     html_body: htmlBody,
     attachments: renderDraft.getAttachments().map(attachmentRequest),
-    scheduled_for: renderDraft.scheduledFor ? renderDraft.scheduledFor.toISOString() : undefined,
+    scheduled_for: renderDraft.scheduledFor ? renderDraft.scheduledFor.toISOString() : null,
     abort_on_reply: renderDraft.abortOnReply || false,
-    current_message_ids: thread && thread.messageIds,
+    current_message_ids: thread && thread.messageIds || [],
     mail_merge_recipients: attributes.mailMergeRecipients || [],
     // The allowlisted OutgoingMessage.fromDraft() does not copy reminder into
     // its attributes; toJsonRequest() therefore omits it. The persisted draft
     // remains fingerprint-bound so reminder drift still fails the second probe.
-    sensitivity_label_id: attributes.sensitivityLabelId,
-    sensitivity_tenant_id: attributes.sensitivityTenantId,
+    sensitivity_label_id: attributes.sensitivityLabelId ?? null,
+    sensitivity_tenant_id: attributes.sensitivityTenantId ?? null,
   }));
 
   return {

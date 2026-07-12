@@ -1,9 +1,13 @@
 {
   "name": "superhuman-mail",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Unofficial Superhuman mail API client with agent-friendly CLI",
   "keywords": ["pi-package"],
   "license": "MIT",
+  "scripts": {
+    "test:authority": "node --test authority/tests/*.test.mjs",
+    "test": "python3 -m pytest -q && npm run test:authority"
+  },
   "pi": {
     "skills": ["SKILL.md"]
   }

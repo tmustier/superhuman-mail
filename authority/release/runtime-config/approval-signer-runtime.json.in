@@ -1,0 +1,8 @@
+{
+  "expected_uid": @SIGNER_UID_INTEGER@,
+  "socket": "@SIGNER_SOCKET@",
+  "issuer": "@ISSUER_NAME@",
+  "key_id": "@KEY_ID@",
+  "approver": "@APPROVER_PRINCIPAL@",
+  "caller_gid": @ISSUER_PRIVATE_GID_INTEGER@
+}

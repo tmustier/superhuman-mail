@@ -1,0 +1,15 @@
+{
+  "expected_uid": @ISSUER_UID_INTEGER@,
+  "issuer_socket": "@ISSUER_SOCKET@",
+  "signer_socket": "@SIGNER_SOCKET@",
+  "preparer_socket": "/var/run/superhuman-mail/render-preparer/prepare.sock",
+  "issuer_db": "@ISSUER_DB@",
+  "issuer_name": "@ISSUER_NAME@",
+  "key_id": "@KEY_ID@",
+  "approver": "@APPROVER_PRINCIPAL@",
+  "approval_keyword": "@APPROVAL_KEYWORD@",
+  "channel": "@APPROVAL_CHANNEL@",
+  "team_id": "@SLACK_TEAM_ID@",
+  "app_id": "@SLACK_APP_ID@",
+  "caller_gid": @BROKER_CALLER_GID_INTEGER@
+}

@@ -110,7 +110,7 @@ shm opens <thread_id>
 shm opens <thread_id> --recipient someone@example.com
 shm opens --recent
 shm opens --recent --limit 10
-shm opens --recent --recipient rcross@kalginglobal.com
+shm opens --recent --recipient recipient@example.com
 
 # Create drafts
 shm draft reply <thread_id> --body "Thanks for the update"
@@ -141,23 +141,30 @@ shm send --dry-run <thread_id> <draft_id> --account owner@example.com
 shm draft attest-render <thread_id> <draft_id> --account owner@example.com --output ./private-preview [--window-id ID]
 shm attestation show <id-or-path> --account owner@example.com --thread-id <thread_id> --draft-id <draft_id>
 shm approval verify <receipt.json> --attestation <id-or-path>
-shm send --confirm <thread_id> <draft_id> --account owner@example.com --attestation <id-or-path> --approval-receipt <receipt.json> --wait 120
+shm send --confirm <thread_id> <draft_id> --account owner@example.com --approval-receipt <receipt.json> --wait 120
 shm send status <thread_id> <draft_id> --account owner@example.com --wait 120
 
 # Diagnostics
 shm setup [--email someone@example.com]
 shm doctor
+shm executor-contract
 shm schema
 shm schema draft.forward
 ```
 
 ### Strict send semantics
 
-`send --dry-run` is metadata/lifecycle validation only; it reports `send_eligible: false` until an exact live-Superhuman render is attested. `send --confirm` requires an externally issued Ed25519 receipt bound to that exact attestation, reruns the renderer after the external grace period, atomically consumes the single-use receipt with the local POST claim, and posts only freshly probed matching bytes. Caller-supplied `--approval-ref` never authorizes.
+`send --dry-run` is metadata/lifecycle validation only. Approval preparation is authority-owned: the Slack issuer accepts account/thread/draft/delay semantics only and obtains the exact live render plus two PNG roles from the issuer-only executor prepare socket. `send --confirm` is a credential-free thin client that submits the receipt and identifiers to the separate execute socket for durable 60-second grace, rerender, single claim, and conditional provider call. It accepts no caller evidence bytes and has no local journal or transport fallback. Caller-supplied `--approval-ref` never authorizes.
 
-Only `state: sent_provider_confirmed` returns `sent: true`. Accepted/pending/unknown/backend-only or inconsistent possible-send outcomes exit `4`; definitely rejected/failed outcomes exit `1`; provider-confirmed or explicitly scheduled outcomes exit `0`. The local journal prevents duplicate POSTs only among cooperating trusted-executor processes sharing one state directory—global exactly-once is not claimed. Until an external issuer public key is pinned and the transport credentials are isolated in a trusted executor, confirm fails closed with `APPROVAL_TRUST_UNAVAILABLE`.
+Only `state: provider_confirmed` returns `sent: true`. Accepted/pending/unknown outcomes remain non-sent. The executor journal is the one canonical receipt-consumption boundary; global exactly-once outside that credential authority is not claimed. Until an external issuer public key is pinned and the transport credentials are isolated in a trusted executor, confirm fails closed with `APPROVAL_TRUST_UNAVAILABLE`.
 
 See [`docs/send-safety.md`](docs/send-safety.md) for renderer setup, lifecycle evidence, redaction, and retry rules.
+
+### Isolated authority services
+
+Public source for the Slack issuer, Ed25519 signer, 60-second cancellable send executor, and native credential bridge lives in [`authority/`](authority/README.md). They build as three separately signed artifacts with independent sockets, service identities, Keychain ACLs, release pins, and revocation paths.
+
+`shm executor-contract` is credential-free. `shm draft get` and conditional `shm draft send` are fixed provider-bridge operations for the signed executor only; agents must not invoke them directly or treat them as a raw-send fallback.
 
 ### Notes
 
@@ -280,13 +287,14 @@ pyproject.toml
 - `docs/draft-lifecycle-render-attestation.md` — RCA and lifecycle/render-attestation design
 - `docs/send-safety.md` — lifecycle evidence, exact render attestation, external approval, reconciliation, and exit contracts
 - `docs/approval-receipt-issuer-contract.md` / `approval-receipt-v1.schema.json` — trusted issuer/executor interface
+- `authority/README.md` — isolated issuer, signer, executor, credential bridge, release, and activation gates
 
 ## Safety
 
 - `send` is irreversible and requires exact attestation plus an externally signed, short-lived, exact-binding approval receipt
 - execute-time lifecycle validation blocks terminal source-draft residue and existing pending/scheduled jobs
 - HTTP acceptance is pending, never proof of delivery; provider-confirmed immutable identity is required for `sent: true`
-- retries reuse one local attempt identity and reconcile before any further action
+- retries return the canonical executor's durable receipt state and never claim another provider call
 - draft/comment/share operations are reversible
 - `shm doctor` verifies config, local DB, keychain, and auth before you rely on the CLI
 

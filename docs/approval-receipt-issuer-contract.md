@@ -1,6 +1,6 @@
 # External approval receipt issuer contract
 
-Status: **core verifier implemented; external issuer not yet deployed**  
+Status: **core verifier and public authority source implemented; production authority not yet deployed**
 Receipt schema: `shm-approval-receipt/v1`  
 JSON Schema: [`approval-receipt-v1.schema.json`](approval-receipt-v1.schema.json)
 
@@ -14,7 +14,7 @@ The unattended worker is untrusted. It may choose CLI arguments, environment var
 - a local/raw transport fallback that bypasses receipt verification;
 - an API that signs caller-provided bytes.
 
-The issuer belongs in `gugu91/extensions`' `slack-bridge` / durable `broker-core` state, under a separate hardened principal or service. Core `superhuman-mail` contains verification and atomic consumption only. Until a trust root is release-pinned or installed as a root-owned non-writable system file, `shm send --confirm` fails with `APPROVAL_TRUST_UNAVAILABLE`.
+The issuer, signer, and executor source live under this repository's `authority/` tree and ship as separately signed artifacts under distinct hardened principals and ACLs. Core `superhuman-mail` contains read-only verification plus a thin client; atomic consumption exists only in the executor journal. Until a trust root is release-pinned or installed as a root-owned non-writable system file, `shm send --confirm` fails with `APPROVAL_TRUST_UNAVAILABLE`.
 
 A signed receipt is necessary but not sufficient if the worker retains raw Superhuman credentials. Production must run receipt verification, atomic consumption, and transport in a broker-owned/root-owned or remote trusted executor. The worker may submit a request to that executor but cannot patch it or extract its credentials.
 
@@ -28,11 +28,7 @@ The trusted broker exposes semantic operations only:
 
 It never exposes `sign(bytes)`, private-key export, arbitrary approver selection, or caller-controlled trust-root configuration.
 
-`approval.create` accepts the content-free `approval_binding` returned by:
-
-```bash
-shm attestation show ID_OR_PATH --account EMAIL --thread-id THREAD --draft-id DRAFT
-```
+`approval.create` accepts only `{account, thread_id, draft_id, delay_seconds, ttl_seconds}`. It calls the executor's issuer-only prepare socket; caller-provided bindings, records, screenshots, paths, or payload bytes are schema errors. The signed credential bridge runs the allowlisted live renderer and returns raw Python identity bytes plus exactly two role-bound PNGs (`compose`, `outgoing`). The executor validates and marks that evidence trusted-prepared before returning it to the issuer. `shm attestation show` remains observational and is never broker authority.
 
 The binding covers:
 
@@ -45,11 +41,11 @@ The binding covers:
 - reserved send-identity hash;
 - delay and scheduled-send hash.
 
-The broker records the request, random nonce, ≤5-minute expiry, expected Thomas Slack principal, and approval presentation atomically before prompting. The human presentation must show the complete intended recipients, subject, body/render, attachments, and scheduling behavior. Uploaded/rendered evidence must hash to the server-recorded pending request; caller labels or summaries are not authoritative.
+The issuer independently validates the trusted-preparer bundle, recomputes the binding, posts an exhaustive representation of every reviewed outgoing field plus attachment digests, and uploads both role-bound screenshots to its fixed policy channel. It then records the request, random nonce, ≤5-minute expiry, configured Slack principal, presentation digest, and returned team/app/channel/thread hashes. Prepared evidence that does not match the semantic request fails before presentation.
 
 ## Authenticated decision
 
-The issuer directly consumes an authenticated Slack event from Thomas (`U0AF5S3LQ5C`) tied to one pending request. It must verify workspace, channel/thread, Slack event/message ID, principal, exact approval keyword, pending state, nonce, and expiry. It then atomically changes `pending -> approved` once and signs only the server-constructed receipt.
+The issuer directly consumes Slack Socket Mode from its app-token-authenticated WebSocket. It validates configured team ID, app ID, channel/thread, an ordinary unedited human message, immutable Events API `event_id`, principal, exact approval keyword, pending state, nonce, and expiry. The fixed `(team, app, channel, thread)` context resolves the pending request; no HTTP path or proxy selects a request ID. It durably changes `pending -> approved_waiting_signature` before acknowledging the Socket Mode envelope, then signs only the server-constructed receipt. Startup recovery resumes any committed unsigned decision.
 
 Rejections, cancellations, duplicate decisions, late events, edited/deleted approval messages, or events from another principal never produce a receipt. The durable broker state owns TTL, nonce, decision, and audit history.
 
@@ -68,7 +64,7 @@ The approver object is:
 
 ```json
 {
-  "principal": "slack:U0AF5S3LQ5C",
+  "principal": "slack:CONFIGURED_APPROVER_ID",
   "approval_event_id": "<immutable authenticated Slack event/message ID>"
 }
 ```
@@ -95,14 +91,9 @@ shm send --confirm THREAD DRAFT \
   --wait 120
 ```
 
-Core verifies schema, canonical ID, pinned issuer/key, Ed25519 signature, authorized approver, not-before/expiry/max TTL, action/provider, and byte-exact attestation binding. It performs the mandatory second renderer probe. Only then does one SQLite `BEGIN IMMEDIATE` transaction:
+Agent-facing core submits only receipt plus account/thread/draft identifiers to the broker-only execute socket. The executor re-verifies the receipt/binding, its own trusted-prepared marker/artifacts, and the mandatory renderer probe. Its one canonical SQLite journal starts the 60-second abort grace and later uses `BEGIN IMMEDIATE` to recheck expiry and atomically move `grace -> claimed` once. There is no local receipt-consumption journal, caller evidence import, or desktop transport in `shm send --confirm`. `shm executor status|abort RECEIPT_ID` exposes canonical grace/reconciliation control.
 
-1. recheck receipt expiry;
-2. reject a previously consumed receipt ID;
-3. insert the immutable receipt-consumption row;
-4. change the exact attempt from `prepared/post_count=0` to `posting/post_count=1`.
-
-A crash cannot commit receipt consumption without the POST claim or vice versa. After the claim, retry is reconciliation-only. Receipt consumption is retained even when old terminal attempts are purged.
+A crash cannot create a second claim. After `claimed`, retry is reconciliation-only; interrupted claims become permanently `unknown`. Definitive pre-claim failures become durable `failed` or `expired` rows.
 
 ## Typed result contract
 
