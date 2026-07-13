@@ -91,6 +91,35 @@ def test_confirm_passes_attestation_approval_and_wait_and_pending_exits_four(cap
     assert json.loads(capsys.readouterr().out)["data"]["sent"] is False
 
 
+def test_qualified_website_inbound_passes_narrow_policy_args_and_pending_exits_four(capsys):
+    result = ok("send.qualified_website_inbound", {
+        **_send_data("unknown", sent=False),
+        "post_claimed": True,
+        "automation_policy": "qualified_website_inbound_v1",
+    })
+    with patch("superhuman_mail.cli._send.execute_qualified_website_inbound", return_value=result) as execute:
+        code = main([
+            "send", "--qualified-website-inbound", THREAD, DRAFT,
+            "--account", ACCOUNT,
+            "--lead-email", "lead@example.test",
+            "--qualification-ref", "website-inbounds:webin-0123abcd",
+            "--delay", "20",
+            "--wait", "30",
+        ])
+    assert code == 4
+    execute.assert_called_once_with(
+        THREAD,
+        DRAFT,
+        delay=20,
+        account=ACCOUNT,
+        lead_email="lead@example.test",
+        qualification_ref="website-inbounds:webin-0123abcd",
+        wait=30.0,
+    )
+    output = json.loads(capsys.readouterr().out)
+    assert output["data"]["post_claimed"] is True
+
+
 def test_executor_status_and_abort_route_to_canonical_authority(capsys):
     receipt_id = "sha256:" + "a" * 64
     with patch("superhuman_mail.cli._authority_client.status", return_value=ok("executor.status", {"state": "grace"})) as status:

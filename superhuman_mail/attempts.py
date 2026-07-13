@@ -98,6 +98,9 @@ class AttemptJournal:
                     approval_approver TEXT,
                     approval_issued_at TEXT,
                     approval_expires_at TEXT,
+                    automation_policy TEXT,
+                    qualification_ref_hash TEXT,
+                    automation_target_hash TEXT,
                     superhuman_id TEXT NOT NULL,
                     outgoing_fingerprint TEXT NOT NULL,
                     created_at TEXT NOT NULL,
@@ -131,6 +134,9 @@ class AttemptJournal:
                 "approval_approver": "TEXT",
                 "approval_issued_at": "TEXT",
                 "approval_expires_at": "TEXT",
+                "automation_policy": "TEXT",
+                "qualification_ref_hash": "TEXT",
+                "automation_target_hash": "TEXT",
             }
             for column, column_type in migrations.items():
                 columns = {row[1] for row in conn.execute("PRAGMA table_info(attempts)")}
@@ -314,6 +320,141 @@ class AttemptJournal:
             conn.execute("COMMIT")
             assert row is not None
             return dict(row), True
+        except Exception:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
+        finally:
+            conn.close()
+
+    def create_or_get_automation(
+        self,
+        *,
+        account_id: str,
+        account_hash: str,
+        thread_id: str,
+        draft_id: str,
+        automation_policy: str,
+        qualification_ref: str,
+        target_email: str,
+        superhuman_id: str,
+        outgoing_fingerprint: str,
+    ) -> tuple[dict[str, Any], bool]:
+        """Create or resume one policy-scoped unattended attempt.
+
+        The qualification reference and target are stored only as hashes.  A
+        caller may reconcile an already-claimed attempt, but cannot repurpose
+        its draft row for another policy, lead, or payload.
+        """
+        now = _now()
+        qualification_hash = _hash_ref(qualification_ref)
+        target_hash = _hash_ref(target_email.strip().lower())
+        attempt_id = str(uuid.uuid4())
+        attestation_id = f"automation:{automation_policy}"
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            existing = conn.execute(
+                "SELECT * FROM attempts WHERE account_id = ? AND draft_id = ?",
+                (account_id, draft_id),
+            ).fetchone()
+            if existing is not None:
+                row = dict(existing)
+                expected = {
+                    "thread_id": thread_id,
+                    "attestation_id": attestation_id,
+                    "approval_ref_hash": qualification_hash,
+                    "automation_policy": automation_policy,
+                    "qualification_ref_hash": qualification_hash,
+                    "automation_target_hash": target_hash,
+                    "superhuman_id": superhuman_id,
+                    "outgoing_fingerprint": outgoing_fingerprint,
+                }
+                mismatched = [key for key, value in expected.items() if row.get(key) != value]
+                if mismatched:
+                    conn.execute("ROLLBACK")
+                    raise AttemptConflict(
+                        "Existing attempt differs in " + ", ".join(mismatched)
+                        + "; reconcile it instead of creating a new identity"
+                    )
+                conn.execute("COMMIT")
+                return row, False
+
+            conn.execute(
+                """
+                INSERT INTO attempts (
+                    attempt_id, account_id, account_hash, thread_id, draft_id,
+                    attestation_id, approval_ref_hash, automation_policy,
+                    qualification_ref_hash, automation_target_hash,
+                    superhuman_id, outgoing_fingerprint, created_at, updated_at, state
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'prepared')
+                """,
+                (
+                    attempt_id,
+                    account_id,
+                    account_hash,
+                    thread_id,
+                    draft_id,
+                    attestation_id,
+                    qualification_hash,
+                    automation_policy,
+                    qualification_hash,
+                    target_hash,
+                    superhuman_id,
+                    outgoing_fingerprint,
+                    now,
+                    now,
+                ),
+            )
+            row = conn.execute("SELECT * FROM attempts WHERE attempt_id = ?", (attempt_id,)).fetchone()
+            conn.execute("COMMIT")
+            assert row is not None
+            return dict(row), True
+        except Exception:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
+        finally:
+            conn.close()
+
+    def claim_automation_post(
+        self,
+        attempt_id: str,
+        *,
+        automation_policy: str,
+        qualification_ref: str,
+        target_email: str,
+    ) -> tuple[dict[str, Any], bool]:
+        """Atomically claim the only POST for a policy-scoped attempt."""
+        qualification_hash = _hash_ref(qualification_ref)
+        target_hash = _hash_ref(target_email.strip().lower())
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute("SELECT * FROM attempts WHERE attempt_id = ?", (attempt_id,)).fetchone()
+            if row is None:
+                conn.execute("ROLLBACK")
+                raise KeyError(attempt_id)
+            current = dict(row)
+            if (
+                current.get("automation_policy") != automation_policy
+                or current.get("qualification_ref_hash") != qualification_hash
+                or current.get("automation_target_hash") != target_hash
+            ):
+                conn.execute("ROLLBACK")
+                raise AttemptConflict("Automation attempt bindings differ")
+            if current["state"] != "prepared" or int(current["post_count"]) != 0:
+                conn.execute("COMMIT")
+                return current, False
+            now = _now()
+            conn.execute(
+                "UPDATE attempts SET state = 'posting', post_count = 1, updated_at = ? WHERE attempt_id = ?",
+                (now, attempt_id),
+            )
+            claimed = conn.execute("SELECT * FROM attempts WHERE attempt_id = ?", (attempt_id,)).fetchone()
+            conn.execute("COMMIT")
+            assert claimed is not None
+            return dict(claimed), True
         except Exception:
             if conn.in_transaction:
                 conn.execute("ROLLBACK")

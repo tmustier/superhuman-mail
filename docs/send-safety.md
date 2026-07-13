@@ -131,7 +131,34 @@ shm send --confirm THREAD DRAFT \
 6. invokes the credential bridge's conditional provider call once;
 7. reconciles provider evidence without retry after any ambiguous boundary, then removes private prepared records/screenshots while retaining body-free journal hashes.
 
-There is no unattested fallback for customer mail.
+There is no unattested fallback for general customer mail.
+
+## Qualified website-inbound policy
+
+The sole unattended exception is the designated website-inbounds first-response workflow:
+
+```bash
+shm send --qualified-website-inbound THREAD DRAFT \
+  --account owner@example.com \
+  --lead-email lead@example.com \
+  --qualification-ref website-inbounds:webin-0123abcd \
+  --wait 120
+```
+
+This route intentionally does not use an external issuer, signature, credential-isolated executor, render attestation, or per-message human approval receipt. The calling commercial workflow owns person/company qualification, individual timezone confidence, calendar checks, concrete-slot quality, and source-context binding. The core command then enforces its narrow transport shape:
+
+1. explicit account and canonical body-free source reference;
+2. new `compose` action only;
+3. exactly one `To` recipient equal to `--lead-email`;
+4. no Bcc, attachment, or scheduled send;
+5. two metadata/lifecycle validations with identical outgoing fingerprints;
+6. one account+draft attempt row bound to policy, source-reference hash, target hash, Superhuman identity, and outgoing fingerprint;
+7. one atomic local POST claim before network I/O;
+8. provider reconciliation without a second POST after any ambiguous boundary.
+
+A repeat invocation with the same bindings reconciles the existing attempt. Changed policy, source reference, target, thread, Superhuman identity, or outgoing fingerprint fails `ATTEMPT_CONFLICT`. Pending/unknown remains non-sent and exits `4`. This local journal does not serialize the native UI or another credential authority and therefore does not claim global exactly-once.
+
+Do not use this route for replies, manual outreach, follow-ups, other inbound sources, or generic automation. Those remain on the external approval path.
 
 ## Approval authority boundary
 
@@ -147,7 +174,7 @@ Send/status data includes:
 
 ```text
 state, post_claimed, accepted, sent, provider_confirmed, outbound_evidence
-attempt_id, attestation_id, superhuman_id, provider_message_id
+attempt_id, attestation_id, superhuman_id, provider_message_id, automation_policy
 approval_authority, approval_verified, approval_consumed, approval_receipt_id
 approval_issuer, approval_key_id, unattended_send_eligible, trusted_executor_required
 idempotency_scope, lifecycle
@@ -159,13 +186,15 @@ Exit codes:
 - `1`: rejected, tampered/stale attestation, or definitely terminal failure;
 - `4`: pending/unknown/backend-only or inconsistent possible-send evidence after the requested wait.
 
-Follow-up/CRM automation must consume only `provider_confirmed: true` / `state: provider_confirmed` from the authority result.
+Follow-up/CRM automation must consume only `provider_confirmed: true` / `state: sent_provider_confirmed` / `outbound_evidence: true` / `sent: true` from the result.
 
 ## Idempotency scope
 
-The executor SQLite journal is the only receipt-consumption journal. `receipt_id` is its primary key; immutable receipt/execution/binding hashes detect conflicting replay, and `BEGIN IMMEDIATE` provides one `grace -> claimed` transition.
+For external receipt sends, the executor SQLite journal is the only receipt-consumption journal. `receipt_id` is its primary key; immutable receipt/execution/binding hashes detect conflicting replay, and `BEGIN IMMEDIATE` provides one `grace -> claimed` transition.
 
-This does **not** serialize another credential authority or the native Superhuman UI. Production therefore permits transport credentials in only one canonical executor/bridge boundary.
+For qualified website-inbound sends, the local attempt journal keys account+draft and atomically changes `post_count` from 0 to 1 after checking the policy/source/target bindings. It is the cooperating website automation's one-POST boundary.
+
+Neither journal serializes another credential authority or the native Superhuman UI.
 
 Global exactly-once requires a vendor idempotency key or compare-and-set send contract.
 

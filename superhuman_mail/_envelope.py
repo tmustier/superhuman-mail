@@ -26,12 +26,18 @@ def ok(command: str, data: Any, warnings: list[str] | None = None) -> dict[str, 
     }
 
 
-def fail(command: str, errors: list[dict[str, Any]], warnings: list[str] | None = None) -> dict[str, Any]:
-    """Build a failure envelope."""
+def fail(
+    command: str,
+    errors: list[dict[str, Any]],
+    warnings: list[str] | None = None,
+    *,
+    data: Any = None,
+) -> dict[str, Any]:
+    """Build a failure envelope, optionally retaining body-free lifecycle data."""
     return {
         "status": "failed",
         "command": command,
-        "data": None,
+        "data": data,
         "errors": errors,
         "warnings": warnings or [],
     }
