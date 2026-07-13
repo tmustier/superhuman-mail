@@ -139,6 +139,15 @@ class _SendOps:
         """Strict exact-attested send. IRREVERSIBLE."""
         return _send.execute(thread_id, draft_id, **kwargs)
 
+    def execute_qualified_website_inbound(
+        self,
+        thread_id: str,
+        draft_id: str,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        """Policy-scoped qualified website-inbound compose send. IRREVERSIBLE."""
+        return _send.execute_qualified_website_inbound(thread_id, draft_id, **kwargs)
+
 
 class _ApprovalOps:
     """External exact-send approval verification (read-only)."""

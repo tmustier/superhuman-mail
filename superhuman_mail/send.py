@@ -164,6 +164,8 @@ def _build_outgoing(draft: dict[str, Any], sid: str | None = None) -> dict[str, 
 # ---------------------------------------------------------------------------
 
 SEND_DELAY_SECONDS = 20
+QUALIFIED_WEBSITE_INBOUND_POLICY = "qualified_website_inbound_v1"
+_QUALIFIED_WEBSITE_INBOUND_REF_RE = re.compile(r"^website-inbounds:webin-[0-9a-f]{8}$")
 
 
 class SendSafetyError(RuntimeError):
@@ -349,6 +351,42 @@ def _post_exact_payload(outgoing: dict[str, Any], *, delay: int) -> None:
         resp.read()
 
 
+def _validate_qualified_website_inbound(
+    checked: dict[str, Any],
+    *,
+    lead_email: str,
+) -> None:
+    """Apply the narrow unattended policy to one CLI-created compose draft."""
+    draft = checked["draft"]
+    outgoing = checked["outgoing"]
+    if str(draft.get("action") or "") != "compose":
+        raise SendSafetyError(
+            "WEBSITE_INBOUND_COMPOSE_REQUIRED",
+            "Qualified website-inbound automation may send only a new compose draft",
+        )
+    normalized_lead = lead_email.strip().lower()
+    if not _valid_address(normalized_lead):
+        raise SendSafetyError("INVALID_LEAD_EMAIL", "--lead-email must be a valid address", cls="input")
+    to_emails = [str(item.get("email") or "").strip().lower() for item in outgoing.get("to") or []]
+    if to_emails != [normalized_lead]:
+        raise SendSafetyError(
+            "WEBSITE_INBOUND_TARGET_MISMATCH",
+            "Qualified website-inbound automation requires exactly one To recipient matching --lead-email",
+        )
+    if outgoing.get("bcc"):
+        raise SendSafetyError("WEBSITE_INBOUND_BCC_FORBIDDEN", "Qualified website-inbound automation forbids Bcc")
+    if outgoing.get("attachments"):
+        raise SendSafetyError(
+            "WEBSITE_INBOUND_ATTACHMENTS_FORBIDDEN",
+            "Qualified website-inbound automation does not send attachments",
+        )
+    if draft.get("scheduledFor"):
+        raise SendSafetyError(
+            "WEBSITE_INBOUND_SCHEDULE_FORBIDDEN",
+            "Qualified website-inbound automation sends an immediate first response only",
+        )
+
+
 def _lifecycle_request_accepted(state: dict[str, Any]) -> bool:
     if state["state"] in {
         lifecycle.SCHEDULED,
@@ -375,11 +413,13 @@ def _attempt_result(attempt: dict[str, Any], state: dict[str, Any]) -> dict[str,
     material_state = state["state"]
     if post_claimed and material_state == lifecycle.ACTIVE and attempt.get("state") == "unknown":
         material_state = "unknown"
+    automation_policy = attempt.get("automation_policy")
+    policy_scoped = bool(automation_policy)
     return {
         "attempt_id": attempt["attempt_id"],
         "thread_id": attempt["thread_id"],
         "draft_id": attempt["draft_id"],
-        "attestation_id": attempt["attestation_id"],
+        "attestation_id": None if policy_scoped else attempt["attestation_id"],
         "state": material_state,
         "post_claimed": post_claimed,
         "accepted": accepted,
@@ -388,14 +428,19 @@ def _attempt_result(attempt: dict[str, Any], state: dict[str, Any]) -> dict[str,
         "outbound_evidence": bool(state["outbound_evidence"]),
         "superhuman_id": attempt["superhuman_id"],
         "provider_message_id": (state.get("provider_message") or {}).get("id"),
-        "approval_authority": _approval.AUTHORITY if attempt.get("approval_receipt_id") else "external_receipt_required",
+        "automation_policy": automation_policy,
+        "approval_authority": (
+            "policy_scoped_automation"
+            if policy_scoped
+            else (_approval.AUTHORITY if attempt.get("approval_receipt_id") else "external_receipt_required")
+        ),
         "approval_verified": bool(attempt.get("approval_receipt_id")),
-        "approval_consumed": post_claimed,
+        "approval_consumed": post_claimed and not policy_scoped,
         "approval_receipt_id": attempt.get("approval_receipt_id"),
         "approval_issuer": attempt.get("approval_issuer"),
         "approval_key_id": attempt.get("approval_key_id"),
-        "unattended_send_eligible": False,
-        "trusted_executor_required": True,
+        "unattended_send_eligible": policy_scoped,
+        "trusted_executor_required": not policy_scoped,
         "idempotency_scope": _attempts.IDEMPOTENCY_SCOPE,
         "lifecycle": state,
     }
@@ -614,6 +659,176 @@ def status(
         return _safety_failure("send.status", exc)
     except Exception as exc:
         return fail("send.status", [classify_exception(exc)])
+
+
+def execute_qualified_website_inbound(
+    thread_id: str,
+    draft_id: str,
+    *,
+    account: str | None,
+    lead_email: str | None,
+    qualification_ref: str | None,
+    delay: int = SEND_DELAY_SECONDS,
+    wait: float = 120,
+    journal: _attempts.AttemptJournal | None = None,
+) -> dict[str, Any]:
+    """Send one qualified website-inbound compose without human receipt machinery.
+
+    This is the sole unattended send policy.  It uses a body-free source
+    reference supplied by the commercial website-inbounds workflow, validates
+    the exact target and draft shape, claims one local POST before network I/O,
+    and reports sent only after immutable provider confirmation.
+    """
+    try:
+        if not account:
+            raise SendSafetyError("ACCOUNT_REQUIRED", "--account is required", cls="input")
+        if not lead_email:
+            raise SendSafetyError("LEAD_EMAIL_REQUIRED", "--lead-email is required", cls="input")
+        if not qualification_ref or not _QUALIFIED_WEBSITE_INBOUND_REF_RE.fullmatch(qualification_ref):
+            raise SendSafetyError(
+                "QUALIFICATION_REFERENCE_INVALID",
+                "--qualification-ref must be website-inbounds:webin-<8 lowercase hex>",
+                cls="input",
+            )
+        if delay < 0 or delay > 120:
+            raise SendSafetyError("INVALID_DELAY", "--delay must be between 0 and 120 seconds", cls="input")
+
+        identity, account_warnings = lifecycle.resolve_account(account, require_explicit=True)
+        journal = journal or _attempts.AttemptJournal()
+        attempt = journal.get(identity["provider_user_id"], draft_id)
+        if attempt is not None:
+            attempt, _created = journal.create_or_get_automation(
+                account_id=identity["provider_user_id"],
+                account_hash=_attestation.sha256(identity["email"].lower()),
+                thread_id=thread_id,
+                draft_id=draft_id,
+                automation_policy=QUALIFIED_WEBSITE_INBOUND_POLICY,
+                qualification_ref=qualification_ref,
+                target_email=lead_email,
+                superhuman_id=str(attempt["superhuman_id"]),
+                outgoing_fingerprint=str(attempt["outgoing_fingerprint"]),
+            )
+            if int(attempt["post_count"]) > 0 or attempt["state"] != "prepared":
+                updated, state, warnings = _reconcile(
+                    attempt,
+                    account=identity["email"],
+                    wait=wait,
+                    journal=journal,
+                )
+                data = _attempt_result(updated, state)
+                if state["state"] in {lifecycle.FAILED, lifecycle.ABORTED, lifecycle.INCONSISTENT}:
+                    code = "SEND_TERMINAL_FAILURE" if state["state"] != lifecycle.INCONSISTENT else "LIFECYCLE_INCONSISTENT"
+                    return fail(
+                        "send.qualified_website_inbound",
+                        [error("conflict", code, False, f"Attempt reconciled to {state['state']}")],
+                        warnings=account_warnings + warnings,
+                        data=data,
+                    )
+                if not data["sent"]:
+                    warnings.append("Existing attempt remains pending/unknown; no additional POST was made")
+                return ok("send.qualified_website_inbound", data, warnings=account_warnings + warnings)
+            sid = str(attempt["superhuman_id"])
+        else:
+            sid = _superhuman_id()
+
+        checked = _preflight(
+            thread_id,
+            draft_id,
+            account=identity["email"],
+            sid=sid,
+            require_explicit_account=True,
+        )
+        _validate_qualified_website_inbound(checked, lead_email=lead_email)
+        fingerprint = _attestation.sha256(_attestation.canonical_bytes(checked["outgoing"]))
+        attempt, _created = journal.create_or_get_automation(
+            account_id=identity["provider_user_id"],
+            account_hash=_attestation.sha256(identity["email"].lower()),
+            thread_id=thread_id,
+            draft_id=draft_id,
+            automation_policy=QUALIFIED_WEBSITE_INBOUND_POLICY,
+            qualification_ref=qualification_ref,
+            target_email=lead_email,
+            superhuman_id=sid,
+            outgoing_fingerprint=fingerprint,
+        )
+
+        # Re-read immediately before the durable claim.  This catches edits
+        # between initial validation and send without requiring GUI rendering.
+        final_checked = _preflight(
+            thread_id,
+            draft_id,
+            account=identity["email"],
+            sid=sid,
+            require_explicit_account=True,
+        )
+        _validate_qualified_website_inbound(final_checked, lead_email=lead_email)
+        final_fingerprint = _attestation.sha256(_attestation.canonical_bytes(final_checked["outgoing"]))
+        if final_fingerprint != fingerprint:
+            raise SendSafetyError(
+                "WEBSITE_INBOUND_DRAFT_CHANGED",
+                "Website-inbound draft changed during send validation",
+            )
+
+        attempt, claimed = journal.claim_automation_post(
+            attempt["attempt_id"],
+            automation_policy=QUALIFIED_WEBSITE_INBOUND_POLICY,
+            qualification_ref=qualification_ref,
+            target_email=lead_email,
+        )
+        if not claimed:
+            updated, state, warnings = _reconcile(
+                attempt,
+                account=identity["email"],
+                wait=wait,
+                journal=journal,
+            )
+            return ok(
+                "send.qualified_website_inbound",
+                _attempt_result(updated, state),
+                warnings=account_warnings + warnings,
+            )
+
+        try:
+            _post_exact_payload(final_checked["outgoing"], delay=delay)
+            attempt = journal.update(attempt["attempt_id"], state="request_accepted", response_class="http_2xx")
+        except Exception as transport_exc:
+            classified = classify_exception(transport_exc)
+            attempt = journal.update(
+                attempt["attempt_id"],
+                state="unknown",
+                response_class=classified["code"],
+                last_error=type(transport_exc).__name__,
+            )
+
+        updated, state, warnings = _reconcile(
+            attempt,
+            account=identity["email"],
+            wait=wait,
+            journal=journal,
+        )
+        data = _attempt_result(updated, state)
+        if state["state"] in {lifecycle.FAILED, lifecycle.ABORTED, lifecycle.INCONSISTENT}:
+            code = "SEND_TERMINAL_FAILURE" if state["state"] != lifecycle.INCONSISTENT else "LIFECYCLE_INCONSISTENT"
+            return fail(
+                "send.qualified_website_inbound",
+                [error("conflict", code, False, f"Attempt reconciled to {state['state']}")],
+                warnings=account_warnings + warnings,
+                data=data,
+            )
+        if not data["sent"]:
+            warnings.append(
+                "Request is pending/unknown; reconcile this attempt and never create another POST"
+            )
+        return ok("send.qualified_website_inbound", data, warnings=account_warnings + warnings)
+    except SendSafetyError as exc:
+        return _safety_failure("send.qualified_website_inbound", exc)
+    except _attempts.AttemptConflict as exc:
+        return fail(
+            "send.qualified_website_inbound",
+            [error("conflict", "ATTEMPT_CONFLICT", False, str(exc))],
+        )
+    except Exception as exc:
+        return fail("send.qualified_website_inbound", [classify_exception(exc)])
 
 
 def execute(

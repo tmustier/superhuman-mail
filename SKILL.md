@@ -48,9 +48,11 @@ If `shm doctor` fails, make sure Superhuman is running and signed in, then rerun
 
 ## Core safety rule
 
-**Never send without explicit user approval and an exact live-render attestation.**
+**For general outbound, never send without explicit user approval and an exact live-render attestation.**
 
-Use this workflow every time:
+The sole unattended exception is the designated qualified website-inbounds automation. It may call `shm send --qualified-website-inbound` only after its own person/company qualification, timezone, calendar, draft-quality, exact-recipient, and dry-run gates pass. Do not use that policy for replies, manual outreach, follow-ups, or any non-website source.
+
+For general outbound, use this workflow every time:
 1. create or inspect the draft
 2. run lifecycle preflight: `shm send --dry-run ... --account EMAIL`
 3. open that exact draft in a CDP-enabled Superhuman app without editing it
@@ -60,7 +62,9 @@ Use this workflow every time:
 7. obtain the short-lived Ed25519 receipt bound to that exact `approval_binding`
 8. let the trusted executor run `shm send --confirm ... --approval-receipt RECEIPT`; use `shm executor status|abort RECEIPT_ID` during grace and require `state: provider_confirmed`
 
-Never treat draft timestamps, labels, HTTP acceptance, `sent_backend_confirmed`, or exit `4` as a completed send. Never create CRM/follow-up work until `provider_confirmed: true`. Caller-supplied `--approval-ref` never authorizes. Until a trusted issuer root and credential-isolated executor are deployed, confirm must fail closed and unattended agents must not have Superhuman transport credentials. `shm draft get` and conditional `shm draft send` are signed credential-bridge internals, not agent-callable fallback commands.
+Never treat draft timestamps, labels, HTTP acceptance, `sent_backend_confirmed`, or exit `4` as a completed send. Never create CRM/follow-up work until `state: sent_provider_confirmed`, `provider_confirmed: true`, `outbound_evidence: true`, and `sent: true`. Caller-supplied `--approval-ref` never authorizes a general send. `shm draft get` and conditional `shm draft send` are signed credential-bridge internals, not agent-callable fallback commands.
+
+For the qualified website-inbound route, pass the exact lead and body-free source case. The command permits only a new compose to exactly one matching `To` recipient, with no Bcc, attachment, or scheduled send. Its account+draft attempt journal claims one POST before network I/O; a pending/unknown result must be reconciled with `shm send status`, never retried with another draft or POST.
 
 ## Command surface
 
@@ -145,6 +149,9 @@ shm approval verify <receipt.json> --attestation <id-or-path>
 shm send status <thread_id> <draft_id> --account email [--wait seconds]
 # The trusted executor invokes this only with an externally signed exact receipt:
 shm send --confirm <thread_id> <draft_id> --account email --approval-receipt <receipt.json> [--wait seconds]
+# Designated qualified website-inbounds automation only:
+shm send --qualified-website-inbound <thread_id> <draft_id> --account email \
+  --lead-email lead@example.com --qualification-ref website-inbounds:webin-0123abcd [--wait seconds]
 shm setup [--config path] [--email address]
 shm doctor
 shm schema [command]
@@ -170,7 +177,7 @@ shm draft attest-render <thread_id> <draft_id> --account owner@example.com --out
 shm attestation show <attestation_id> --account owner@example.com --thread-id <thread_id> --draft-id <draft_id>
 ```
 
-The external broker accepts only account/thread/draft/delay semantics, obtains its authoritative attestation from the trusted prepare socket, and issues a single-use receipt after explicit approval. Then let the credential-isolated executor consume that receipt; do not supply evidence bytes or invoke local/raw transport. Use `shm executor status RECEIPT_ID` during grace/reconciliation and require `provider_confirmed`.
+The external broker accepts only account/thread/draft/delay semantics, obtains its authoritative attestation from the trusted prepare socket, and issues a single-use receipt after explicit approval. Then let the credential-isolated executor consume that receipt; do not supply evidence bytes or invoke local/raw transport. Use `shm executor status RECEIPT_ID` during grace/reconciliation and require `sent_provider_confirmed`. This general flow is separate from the qualified website-inbound policy above.
 
 ### 2. Get read receipts / recent opens
 

@@ -366,14 +366,17 @@ SCHEMA: dict[str, dict[str, Any]] = {
         ],
     },
     "send": {
-        "description": "Validate, reconcile, or strictly send an exactly attested draft",
+        "description": "Validate, reconcile, explicitly approve, or policy-send a qualified website inbound",
         "args": {
             "thread_id": {"required": True, "type": "string"},
             "draft_id": {"required": True, "type": "string"},
             "--dry-run": {"required": False, "type": "flag", "hint": "Metadata/lifecycle preflight only"},
             "--status": {"required": False, "type": "flag", "hint": "Reconcile without sending"},
-            "--confirm": {"required": False, "type": "flag", "hint": "Strict exact-attested send"},
+            "--confirm": {"required": False, "type": "flag", "hint": "Explicit exact-attested send"},
+            "--qualified-website-inbound": {"required": False, "type": "flag", "hint": "Narrow unattended policy for a qualified website-inbound compose"},
             "--account": {"required": False, "type": "string"},
+            "--lead-email": {"required": False, "type": "string", "hint": "Exact qualified website lead; required with --qualified-website-inbound"},
+            "--qualification-ref": {"required": False, "type": "string", "hint": "website-inbounds:webin-<8 lowercase hex> source reference"},
             "--attestation": {"required": False, "type": "string", "hint": "Optional receipt-bound attestation ID consistency check"},
             "--approval-receipt": {"required": False, "type": "string", "hint": "Externally signed exact-send receipt; required with --confirm"},
             "--approval-ref": {"required": False, "type": "string", "hint": "Deprecated audit correlation; never authorizes"},
@@ -387,6 +390,7 @@ SCHEMA: dict[str, dict[str, Any]] = {
             "shm send --dry-run THREAD DRAFT --account owner@example.com",
             "shm send status THREAD DRAFT --account owner@example.com --wait 120",
             "shm send --confirm THREAD DRAFT --account owner@example.com --approval-receipt RECEIPT.json --wait 120",
+            "shm send --qualified-website-inbound THREAD DRAFT --account owner@example.com --lead-email lead@example.com --qualification-ref website-inbounds:webin-0123abcd",
         ],
     },
     "executor.status": {
@@ -803,14 +807,21 @@ def _build_parser() -> _ShmParser:
     c_discard.add_argument("comment_id")
 
     # -- send (top-level, irreversible) --
-    send_p = _sub(sub, "send", help="Send a draft (IRREVERSIBLE — requires --dry-run or --confirm)", schema_key="send")
+    send_p = _sub(sub, "send", help="Send a draft (IRREVERSIBLE — explicit or qualified-website policy)", schema_key="send")
     send_p.add_argument("thread_id")
     send_p.add_argument("draft_id")
     send_g = send_p.add_mutually_exclusive_group(required=True)
     send_g.add_argument("--dry-run", action="store_true", help="Metadata/lifecycle preflight without sending")
     send_g.add_argument("--status", action="store_true", help="Reconcile status without sending")
     send_g.add_argument("--confirm", action="store_true", help="Strict exact-attested send (irreversible)")
+    send_g.add_argument(
+        "--qualified-website-inbound",
+        action="store_true",
+        help="Policy-scoped send for a qualified website-inbound compose (irreversible)",
+    )
     send_p.add_argument("--account")
+    send_p.add_argument("--lead-email")
+    send_p.add_argument("--qualification-ref")
     send_p.add_argument("--attestation")
     send_p.add_argument("--approval-receipt", help="Externally signed exact-send approval receipt")
     send_p.add_argument("--approval-ref", help="Deprecated audit correlation only; never grants authority")
@@ -1067,6 +1078,19 @@ def main(argv: list[str] | None = None) -> int:
                 args.thread_id,
                 args.draft_id,
                 account=args.account,
+                wait=args.wait,
+            )
+            if result["status"] == "succeeded":
+                return emit(result, exit_code=_typed_send_exit(result["data"]))
+            return emit(result)
+        elif args.qualified_website_inbound:
+            result = _send.execute_qualified_website_inbound(
+                args.thread_id,
+                args.draft_id,
+                delay=args.delay,
+                account=args.account,
+                lead_email=args.lead_email,
+                qualification_ref=args.qualification_ref,
                 wait=args.wait,
             )
             if result["status"] == "succeeded":

@@ -90,7 +90,7 @@ There is no alternate text/table mode. Humans can pipe to `jq`; agents always ge
 |---|---|---|
 | **read** | `thread messages`, `thread userdata`, `thread list`, `thread search`, `opens`, `opens --recent`, `draft read`, `draft status`, `draft attest-render`, `attestation show`, `send --dry-run`, `send status`, `comment read`, `doctor`, `schema` | No mail mutation |
 | **write** | `setup`, `draft reply`, `draft reply-all`, `draft forward`, `draft compose`, `draft discard`, `draft attach`, `draft share`, `draft unshare`, `comment post`, `comment discard` | Reversible |
-| **irreversible** | `send` | Requires `--dry-run` or `--confirm` |
+| **irreversible** | `send` | Requires explicit `--confirm` or the narrow `--qualified-website-inbound` automation policy |
 
 ### Command surface
 
@@ -136,13 +136,20 @@ shm comment post <thread_id> --body "Please review"
 shm comment read <thread_id>
 shm comment discard <thread_id> <comment_id>
 
-# Send safety: lifecycle preflight → exact render → approval gate → confirm/status
+# General send safety: lifecycle preflight → exact render → approval gate → confirm/status
 shm send --dry-run <thread_id> <draft_id> --account owner@example.com
 shm draft attest-render <thread_id> <draft_id> --account owner@example.com --output ./private-preview [--window-id ID]
 shm attestation show <id-or-path> --account owner@example.com --thread-id <thread_id> --draft-id <draft_id>
 shm approval verify <receipt.json> --attestation <id-or-path>
 shm send --confirm <thread_id> <draft_id> --account owner@example.com --approval-receipt <receipt.json> --wait 120
 shm send status <thread_id> <draft_id> --account owner@example.com --wait 120
+
+# Qualified website inbound only: one compose, one exact lead, one durable POST claim
+shm send --qualified-website-inbound <thread_id> <draft_id> \
+  --account owner@example.com \
+  --lead-email lead@example.com \
+  --qualification-ref website-inbounds:webin-0123abcd \
+  --wait 120
 
 # Diagnostics
 shm setup [--email someone@example.com]
@@ -154,9 +161,11 @@ shm schema draft.forward
 
 ### Strict send semantics
 
-`send --dry-run` is metadata/lifecycle validation only. Approval preparation is authority-owned: the Slack issuer accepts account/thread/draft/delay semantics only and obtains the exact live render plus two PNG roles from the issuer-only executor prepare socket. `send --confirm` is a credential-free thin client that submits the receipt and identifiers to the separate execute socket for durable 60-second grace, rerender, single claim, and conditional provider call. It accepts no caller evidence bytes and has no local journal or transport fallback. Caller-supplied `--approval-ref` never authorizes.
+`send --dry-run` is metadata/lifecycle validation only. For general outbound, approval preparation is authority-owned: the Slack issuer accepts account/thread/draft/delay semantics only and obtains the exact live render plus two PNG roles from the issuer-only executor prepare socket. `send --confirm` is a credential-free thin client that submits the receipt and identifiers to the separate execute socket. Caller-supplied `--approval-ref` never authorizes.
 
-Only `state: provider_confirmed` returns `sent: true`. Accepted/pending/unknown outcomes remain non-sent. The executor journal is the one canonical receipt-consumption boundary; global exactly-once outside that credential authority is not claimed. Until an external issuer public key is pinned and the transport credentials are isolated in a trusted executor, confirm fails closed with `APPROVAL_TRUST_UNAVAILABLE`.
+`send --qualified-website-inbound` is the sole policy-scoped unattended exception. It is for a designated website-inbounds workflow after agent qualification, not for replies, manual outreach, follow-ups, or generic automation. It requires a new compose, exactly one `To` recipient equal to `--lead-email`, a canonical body-free `website-inbounds:webin-<8 hex>` source reference, no Bcc, no attachment, and no scheduled send. It validates twice, durably claims one local POST before network I/O, and reconciles the same attempt on every retry without a second POST. It deliberately does not require an external issuer, signature, isolated credential holder, or per-message human approval receipt.
+
+Only `state: sent_provider_confirmed` returns `sent: true`. Accepted/pending/unknown outcomes remain non-sent. General receipt sends use the isolated executor journal; the qualified website policy uses its account+draft journal and does not claim global exactly-once against the native UI or another credential authority.
 
 See [`docs/send-safety.md`](docs/send-safety.md) for renderer setup, lifecycle evidence, redaction, and retry rules.
 
@@ -228,7 +237,7 @@ result = c.draft.create_reply("19d001f35612a211", body="Following up",
 result = c.draft.create_compose(subject="Hi", body="Hello", to=["someone@example.com"])
 result = c.draft.share("19d001f35612a211", "draft00abc123")
 
-# Send (strict exact-attested execution)
+# Send (general strict exact-attested execution)
 result = c.send.validate("19d001f35612a211", "draft00abc123", account="owner@example.com")
 attested = c.draft.attest_render("19d001f35612a211", "draft00abc123",
                                  account="owner@example.com", output_dir=Path("./private-preview"))
@@ -237,6 +246,14 @@ result = c.send.execute("19d001f35612a211", "draft00abc123",
                         account="owner@example.com",
                         attestation=attested["attestation_id"],
                         approval_receipt="receipt.json")
+
+# Qualified website-inbound automation only
+result = c.send.execute_qualified_website_inbound(
+    "19d001f35612a211", "draft00abc123",
+    account="owner@example.com",
+    lead_email="lead@example.com",
+    qualification_ref="website-inbounds:webin-0123abcd",
+)
 ```
 
 All methods return the same envelope dict as the CLI.
@@ -291,10 +308,11 @@ pyproject.toml
 
 ## Safety
 
-- `send` is irreversible and requires exact attestation plus an externally signed, short-lived, exact-binding approval receipt
+- general `send --confirm` is irreversible and requires exact attestation plus an externally signed, short-lived, exact-binding approval receipt
+- the only unattended exception is `send --qualified-website-inbound`, restricted to a qualified website-inbound compose and exact lead binding
 - execute-time lifecycle validation blocks terminal source-draft residue and existing pending/scheduled jobs
 - HTTP acceptance is pending, never proof of delivery; provider-confirmed immutable identity is required for `sent: true`
-- retries return the canonical executor's durable receipt state and never claim another provider call
+- retries reconcile the durable attempt and never claim another provider call
 - draft/comment/share operations are reversible
 - `shm doctor` verifies config, local DB, keychain, and auth before you rely on the CLI
 
