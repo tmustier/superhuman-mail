@@ -18,18 +18,21 @@ This is an unofficial, reverse-engineered integration — not an official Superh
 
 `shm` requires:
 1. Superhuman desktop app installed and signed in
-2. Python 3.11+
+2. `uv` and Python 3.11+
 3. Node.js 22+ for exact live-render probing
-4. `cryptography` available in the environment running `shm`
+4. The repository's `scripts/setup.sh` has installed the self-contained `shm` launcher on PATH
 
 ## Setup
 
-Bootstrap directly from the local Superhuman app:
+Install the launcher once from the package checkout, then bootstrap directly from the local Superhuman app:
 
 ```bash
+./scripts/setup.sh
 shm setup
 shm doctor
 ```
+
+The launcher provisions its `cryptography` dependency through `uv`; an activated virtualenv is not required.
 
 If multiple Superhuman accounts are signed in, pick one explicitly:
 

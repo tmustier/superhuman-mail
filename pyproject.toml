@@ -8,7 +8,7 @@ version = "0.3.0"
 description = "Unofficial Superhuman mail API client and agent-friendly CLI"
 requires-python = ">=3.11"
 license = "MIT"
-dependencies = ["cryptography"]
+dependencies = ["cryptography>=49.0.0"]
 
 [tool.setuptools.packages.find]
 include = ["superhuman_mail*"]
