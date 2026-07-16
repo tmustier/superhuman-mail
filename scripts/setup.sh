@@ -1,38 +1,40 @@
 #!/usr/bin/env bash
-# Bootstrap superhuman-mail: create venv, install deps, verify CLI works.
+# Bootstrap superhuman-mail: install a stable launcher and verify the CLI.
 # Run from the repo root: ./scripts/setup.sh
 
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+BIN_DIR="${SHM_BIN_DIR:-$HOME/.local/bin}"
 cd "$REPO_ROOT"
 
-echo "Setting up superhuman-mail in $REPO_ROOT"
-
-# Create venv if needed
-if [ ! -d .venv ]; then
-    echo "Creating Python venv..."
-    python3 -m venv .venv
+if ! command -v uv >/dev/null 2>&1; then
+    echo "uv is required to run the self-contained shm launcher." >&2
+    echo "Install it with: brew install uv" >&2
+    exit 1
 fi
 
-# Install package
-echo "Installing dependencies..."
-.venv/bin/pip install -q -e .
+mkdir -p "$BIN_DIR"
+ln -sfn "$REPO_ROOT/shm" "$BIN_DIR/shm"
 
-# Verify shm is runnable
-echo "Verifying shm..."
-.venv/bin/shm schema > /dev/null 2>&1 && echo "✓ shm CLI is working" || echo "✗ shm CLI failed"
+echo "Installed shm launcher at $BIN_DIR/shm"
+echo "Dependencies are provisioned in uv's isolated cache on first use."
 
-# Check for config
-if [ -f config.json ]; then
-    echo "✓ config.json found"
-    .venv/bin/shm doctor
+PATH="$BIN_DIR:$PATH" shm schema >/dev/null
+echo "✓ shm CLI is working"
+
+if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
+    echo ""
+    echo "Add $BIN_DIR to PATH, for example:"
+    echo "  export PATH=\"$BIN_DIR:\$PATH\""
+fi
+
+if [ -f config.json ] || [ -n "${SUPERHUMAN_MAIL_CONFIG:-}" ]; then
+    echo "✓ Superhuman Mail config found"
+    PATH="$BIN_DIR:$PATH" shm doctor
 else
-    echo "✗ config.json not found"
     echo ""
-    echo "Copy config.example.json to config.json and fill in your values."
-    echo "See the _help fields in config.example.json for where to find each value."
-    echo ""
-    echo "Or set SUPERHUMAN_MAIL_CONFIG to point to an existing config file:"
-    echo "  export SUPERHUMAN_MAIL_CONFIG=/path/to/config.json"
+    echo "No config found yet. With Superhuman running and signed in, run:"
+    echo "  shm setup"
+    echo "  shm doctor"
 fi

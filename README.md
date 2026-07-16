@@ -29,12 +29,12 @@ This installs the `superhuman-mail` skill so agents know when and how to use `sh
 ```bash
 git clone https://github.com/tmustier/superhuman-mail.git
 cd superhuman-mail
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e .
+./scripts/setup.sh
 shm setup
 shm doctor
 ```
+
+The setup script installs a stable `~/.local/bin/shm` launcher pointing at the checkout. The launcher uses `uv` to provision its declared Python and current `cryptography` dependency in an isolated cache, so no activated virtualenv or global Python package is required. Re-run setup only if the checkout moves.
 
 `shm setup` reads credentials directly from the local Superhuman desktop app. No manual config should be necessary.
 
@@ -54,9 +54,10 @@ export SUPERHUMAN_MAIL_CONFIG=/path/to/config.json
 ## Requirements
 
 - Superhuman desktop app installed and signed in
-- Python 3.11+
+- [`uv`](https://docs.astral.sh/uv/) and Python 3.11+
 - Node.js 22+ for the CDP exact-render probe
-- `cryptography` installed in the environment running `shm`
+
+The `shm` launcher provisions `cryptography` itself; do not rely on a global Python package or an activated project virtualenv.
 
 ## Config
 
