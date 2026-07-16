@@ -4,6 +4,7 @@
 
 - make the `shm` launcher self-contained with `uv` and install it on PATH through `scripts/setup.sh`, removing dependence on an activated repository virtualenv
 - update the declared `cryptography` floor to 49.0.0
+- select Superhuman account cookies by the returned email and Google ID, not HTTP success alone
 - move public exact-send authority ownership into this repository
 - add separately signed Slack issuer, Ed25519 signer, and 60-second cancellable send executor artifacts with independent ACLs and revocation
 - add the native provider credential bridge and fixed `shm executor-contract`, `draft get`, and conditional `draft send` contract

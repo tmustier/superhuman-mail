@@ -149,14 +149,19 @@ def extract_google_ids() -> list[str]:
 def extract_google_id(email: str, device_id: str, version: str) -> str:
     """Select the Google account ID that matches the chosen email account."""
     candidates = extract_google_ids()
-    if len(candidates) == 1:
-        return candidates[0]
+    expected_email = email.strip().casefold()
 
     matches: list[str] = []
     for google_id in candidates:
         try:
-            _request_auth_data(email, google_id, device_id, version)
-            matches.append(google_id)
+            response = _request_auth_data(email, google_id, device_id, version)
+            auth_data = response.get("authData")
+            if not isinstance(auth_data, dict):
+                continue
+            returned_email = str(auth_data.get("emailAddress") or "").strip().casefold()
+            returned_google_id = str(auth_data.get("googleId") or "").strip()
+            if returned_email == expected_email and returned_google_id == google_id:
+                matches.append(google_id)
         except Exception:
             continue
 
@@ -164,7 +169,7 @@ def extract_google_id(email: str, device_id: str, version: str) -> str:
         return matches[0]
     if not matches:
         raise RuntimeError(
-            f"Multiple Google account cookies detected, but none matched {email}. "
+            f"Google account cookies were found, but none matched {email}. "
             "Re-open Superhuman on the desired account and re-run setup."
         )
     raise RuntimeError(
