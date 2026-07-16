@@ -126,19 +126,40 @@ class TestExtractDbFile:
 class TestExtractGoogleId:
     def test_matching_google_id_is_selected_for_email(self):
         def fake_request(email: str, google_id: str, device_id: str, version: str) -> dict[str, object]:
-            if google_id == "2222222222":
-                return {"authData": {}}
-            raise RuntimeError("wrong account")
+            return {
+                "authData": {
+                    "emailAddress": "two@example.com" if google_id == "2222222222" else "one@example.com",
+                    "googleId": google_id,
+                }
+            }
 
         with patch("superhuman_mail.setup.extract_google_ids", return_value=["1111111111", "2222222222"]):
             with patch("superhuman_mail.setup._request_auth_data", side_effect=fake_request):
                 assert extract_google_id("two@example.com", "device-1", "2026-03-23T00:00:00Z") == "2222222222"
 
-    def test_single_google_id_is_used_without_remote_validation(self):
+    def test_single_google_id_is_validated_for_email(self):
+        response = {
+            "authData": {
+                "emailAddress": "one@example.com",
+                "googleId": "1111111111",
+            }
+        }
         with patch("superhuman_mail.setup.extract_google_ids", return_value=["1111111111"]):
-            with patch("superhuman_mail.setup._request_auth_data") as request_auth_data:
-                assert extract_google_id("missing@example.com", "device-1", "2026-03-23T00:00:00Z") == "1111111111"
-        request_auth_data.assert_not_called()
+            with patch("superhuman_mail.setup._request_auth_data", return_value=response) as request_auth_data:
+                assert extract_google_id("one@example.com", "device-1", "2026-03-23T00:00:00Z") == "1111111111"
+        request_auth_data.assert_called_once()
+
+    def test_successful_response_for_wrong_email_is_not_a_match(self):
+        response = {
+            "authData": {
+                "emailAddress": "other@example.com",
+                "googleId": "1111111111",
+            }
+        }
+        with patch("superhuman_mail.setup.extract_google_ids", return_value=["1111111111"]):
+            with patch("superhuman_mail.setup._request_auth_data", return_value=response):
+                with pytest.raises(RuntimeError, match="none matched"):
+                    extract_google_id("missing@example.com", "device-1", "2026-03-23T00:00:00Z")
 
     def test_raises_when_no_google_id_matches_email(self):
         with patch("superhuman_mail.setup.extract_google_ids", return_value=["1111111111", "2222222222"]):
