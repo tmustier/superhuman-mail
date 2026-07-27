@@ -4,6 +4,7 @@ from __future__ import annotations
 import html as html_mod
 import json
 import random
+import re
 import time
 import urllib.error
 import urllib.request
