@@ -4,7 +4,6 @@ from __future__ import annotations
 import html as html_mod
 import json
 import random
-import re
 import time
 import urllib.error
 import urllib.request
@@ -59,15 +58,12 @@ def _build_html(text: str, mentions: list[dict[str, str]] | None = None) -> str:
             if email and email != name:
                 escaped = escaped.replace(f"@{html_mod.escape(email)}", tag)
 
-    # HTML collapses literal newline characters inside a <p>, which made agent
-    # status comments appear as one wrapped wall of text in Superhuman. Keep
-    # blank lines as paragraph breaks and render single newlines explicitly.
-    paragraphs = re.split(r"\n[ \t]*\n+", escaped.strip("\n"))
-    rendered_paragraphs = []
-    for paragraph in paragraphs:
-        if paragraph.strip():
-            rendered_paragraphs.append(f"<p>{'<br />'.join(paragraph.splitlines())}</p>")
-    body = "".join(rendered_paragraphs)
+    # comments.write currently rejects <br> tags with HTTP 400. Render each
+    # non-empty source line as a paragraph instead: this preserves readable
+    # line separation while staying inside the endpoint's accepted HTML subset.
+    # Do not revert to literal newlines inside one <p>; HTML collapses them.
+    lines = (line for line in escaped.strip("\n").splitlines() if line.strip())
+    body = "".join(f"<p>{line}</p>" for line in lines)
     return f"<div>{body}</div>" if body else "<div><p></p></div>"
 
 
