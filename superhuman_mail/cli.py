@@ -354,6 +354,17 @@ SCHEMA: dict[str, dict[str, Any]] = {
             "shm comment read 19d001f35612a211",
         ],
     },
+    "comment.read-many": {
+        "description": "Read comments for many threads in batched API requests; fails on partial reads",
+        "args": {
+            "thread_ids": {"required": True, "type": "string[]"},
+            "--batch-size": {"required": False, "type": "int", "default": 2},
+        },
+        "safety": "read",
+        "examples": [
+            "shm comment read-many THREAD_1 THREAD_2",
+        ],
+    },
     "comment.discard": {
         "description": "Delete a comment from a thread",
         "args": {
@@ -802,6 +813,10 @@ def _build_parser() -> _ShmParser:
     c_read = _sub(csub, "read", help="Read comments", schema_key="comment.read")
     c_read.add_argument("thread_id")
 
+    c_read_many = _sub(csub, "read-many", help="Read comments for many threads", schema_key="comment.read-many")
+    c_read_many.add_argument("thread_ids", nargs="+")
+    c_read_many.add_argument("--batch-size", type=int, default=2)
+
     c_discard = _sub(csub, "discard", help="Delete a comment", schema_key="comment.discard")
     c_discard.add_argument("thread_id")
     c_discard.add_argument("comment_id")
@@ -1058,12 +1073,14 @@ def main(argv: list[str] | None = None) -> int:
     # -- comment --
     elif args.command == "comment":
         if not hasattr(args, "action") or not args.action:
-            return emit(fail("comment", [error("input", "MISSING_ACTION", False, "Use: shm comment post|read|discard")]))
+            return emit(fail("comment", [error("input", "MISSING_ACTION", False, "Use: shm comment post|read|read-many|discard")]))
         elif args.action == "post":
             mentions = [{"email": m[0], "fullName": m[1]} for m in (args.mention or [])]
             return emit(_comment.post(args.thread_id, args.body, mentions=mentions or None))
         elif args.action == "read":
             return emit(_comment.read(args.thread_id))
+        elif args.action == "read-many":
+            return emit(_comment.read_many(args.thread_ids, batch_size=args.batch_size))
         elif args.action == "discard":
             return emit(_comment.discard(args.thread_id, args.comment_id))
 

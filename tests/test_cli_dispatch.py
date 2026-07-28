@@ -61,6 +61,20 @@ class TestMainReturnsExitCode:
         assert out["status"] == "failed"
         assert "MISSING_ACTION" in out["errors"][0]["code"]
 
+    def test_comment_read_many_dispatches_all_thread_ids(self, capsys):
+        result = {
+            "status": "succeeded",
+            "command": "comment.read-many",
+            "data": {"complete": True, "comments_by_thread": {}},
+            "errors": [],
+            "warnings": [],
+        }
+        with patch("superhuman_mail.cli._comment.read_many", return_value=result) as read_many:
+            code = main(["comment", "read-many", "thread-a", "thread-b", "--batch-size", "1"])
+        assert code == 0
+        read_many.assert_called_once_with(["thread-a", "thread-b"], batch_size=1)
+        assert json.loads(capsys.readouterr().out)["command"] == "comment.read-many"
+
     def test_setup_passes_email(self, capsys):
         with patch("superhuman_mail.cli._setup.run_setup", return_value={"config": {}, "path": "/tmp/config.json", "steps": []}) as run_setup:
             code = main(["setup", "--config", "/tmp/config.json", "--email", "chosen@example.com"])
