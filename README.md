@@ -135,6 +135,7 @@ shm draft unshare <thread_id> <draft_id>
 # Comments
 shm comment post <thread_id> --body "Please review"
 shm comment read <thread_id>
+shm comment read-many <thread_id> [<thread_id> ...] [--batch-size 2]
 shm comment discard <thread_id> <comment_id>
 
 # General send safety: lifecycle preflight → exact render → approval gate → confirm/status

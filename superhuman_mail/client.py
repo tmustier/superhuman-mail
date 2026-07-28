@@ -119,6 +119,10 @@ class _CommentOps:
         """Read comments."""
         return _comment.read(thread_id)
 
+    def read_many(self, thread_ids: list[str], *, batch_size: int = 2) -> dict[str, Any]:
+        """Read comments for many threads in batched API requests."""
+        return _comment.read_many(thread_ids, batch_size=batch_size)
+
     def discard(self, thread_id: str, comment_id: str) -> dict[str, Any]:
         """Discard a comment."""
         return _comment.discard(thread_id, comment_id)
