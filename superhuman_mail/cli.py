@@ -25,21 +25,42 @@ from . import comment as _comment
 from . import draft as _draft
 from . import executor as _executor
 from . import opens as _opens
+from . import reader as _reader
 from . import send as _send
 from . import setup as _setup
 from . import share as _share
 from . import thread as _thread
 from ._envelope import emit, error, fail, ok
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 
-_COMMANDS = ["thread", "opens", "draft", "comment", "send", "attestation", "approval", "executor", "executor-contract", "setup", "doctor", "schema"]
+_COMMANDS = ["reader", "thread", "opens", "draft", "comment", "send", "attestation", "approval", "executor", "executor-contract", "setup", "doctor", "schema"]
 
 # ---------------------------------------------------------------------------
 # Schema definition (for agent introspection)
 # ---------------------------------------------------------------------------
 
 SCHEMA: dict[str, dict[str, Any]] = {
+    "reader.scan": {
+        "description": "Bounded read-only scan of transient local-cache snapshots",
+        "contract_version": "1.0",
+        "args": {
+            "--since": {"required": True, "type": "UTC-Z timestamp", "semantics": "inclusive"},
+            "--before": {"required": True, "type": "UTC-Z timestamp", "semantics": "exclusive"},
+            "--account": {"required": False, "type": "string[]", "repeatable": True, "default": "all configured accounts", "semantics": "exact"},
+            "--projection": {"required": False, "type": "metadata|full", "default": "metadata"},
+            "--thread": {"required": False, "type": "string[]", "repeatable": True, "semantics": "exact OR"},
+            "--person": {"required": False, "type": "email[]", "repeatable": True, "semantics": "normalized exact OR across from/to/cc/bcc"},
+        },
+        "selector_semantics": "OR within thread/person categories; AND across categories and the time window",
+        "coverage": "One deterministic bounded observed set; no provider cursor. Truncation is explicit.",
+        "limits": _reader.contract_limits(),
+        "safety": "read",
+        "examples": [
+            "shm reader scan --since 2026-01-01T00:00:00Z --before 2026-01-02T00:00:00Z",
+            "shm reader scan --since 2026-01-01T00:00:00Z --before 2026-01-02T00:00:00Z --account owner@example.com --projection full --person sender@example.com",
+        ],
+    },
     "thread.messages": {
         "description": "Read thread messages from local Superhuman DB",
         "args": {"thread_id": {"required": True, "type": "string"}},
@@ -657,6 +678,17 @@ def _build_parser() -> _ShmParser:
 
     sub = p.add_subparsers(dest="command")
 
+    # -- reader (production read-only contract) --
+    reader_p = _sub(sub, "reader", help="Bounded production local-cache reader")
+    rsub = reader_p.add_subparsers(dest="action")
+    r_scan = _sub(rsub, "scan", help="Scan exact accounts and UTC window", schema_key="reader.scan")
+    r_scan.add_argument("--since", required=True, help="Inclusive exact UTC-Z timestamp")
+    r_scan.add_argument("--before", required=True, help="Exclusive exact UTC-Z timestamp")
+    r_scan.add_argument("--account", action="append", default=[], help="Exact configured account; repeatable (default: all)")
+    r_scan.add_argument("--projection", choices=("metadata", "full"), default="metadata")
+    r_scan.add_argument("--thread", action="append", default=[], help="Exact thread ID; repeatable")
+    r_scan.add_argument("--person", action="append", default=[], help="Exact normalized email; repeatable")
+
     # -- thread --
     thread_p = _sub(sub, "thread", help="Thread operations")
     tsub = thread_p.add_subparsers(dest="action")
@@ -921,6 +953,19 @@ def main(argv: list[str] | None = None) -> int:
     if not args.command:
         return emit(fail("shm", [error("input", "NO_COMMAND", False,
             f"No command specified. Available commands: {', '.join(_COMMANDS)}")]))
+
+    # -- production reader --
+    if args.command == "reader":
+        if not hasattr(args, "action") or not args.action:
+            return emit(fail("reader", [error("input", "MISSING_ACTION", False, "Use: shm reader scan")]))
+        return emit(_reader.scan(
+            since=args.since,
+            before=args.before,
+            accounts=args.account,
+            projection=args.projection,
+            threads=args.thread,
+            people=args.person,
+        ))
 
     # -- thread --
     if args.command == "thread":

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- add the versioned, bounded, privacy-aware `shm reader scan` local-cache contract with secure transient snapshots and deterministic multi-account results
 - make the `shm` launcher self-contained with `uv` and install it on PATH through `scripts/setup.sh`, removing dependence on an activated repository virtualenv
 - update the declared `cryptography` floor to 49.0.0
 - select Superhuman account cookies by the returned email and Google ID, not HTTP success alone

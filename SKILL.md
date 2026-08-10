@@ -79,6 +79,20 @@ All commands return the same JSON envelope:
 
 Current commands:
 
+### Production reader scan
+
+```bash
+shm reader scan --since 2026-01-01T00:00:00Z --before 2026-01-02T00:00:00Z \
+  [--account exact@example.com ...] [--projection metadata|full] \
+  [--thread exact-id ...] [--person exact@example.com ...]
+```
+
+Use this command for bounded unified-inbox ingestion. Omitted `--account` means all configured accounts. UTC `Z` bounds are exact and define `[since,before)`. Values OR within repeated `--thread` or `--person`; categories AND together. Person matching normalizes email case and checks From/To/Cc/Bcc exactly.
+
+Prefer the default `metadata` projection unless message content is necessary. Metadata recursively excludes subjects, bodies, snippets, display names, and filenames and never queries FTS. `full` includes only bounded direct-cache content with explicit coverage and provenance; never infer complete body content from a snippet, missing value, or FTS. Treat `LOCAL_CACHE_COVERAGE_ONLY` as a permanent provider warning. Check top-level and per-account coverage/truncation reasons before relying on completeness. No cursor is expected for the single deterministic bounded observed set.
+
+The reader makes an anonymous 0600 immutable/query-only snapshot per account, opens SQLite through its verified descriptor, and fails the whole command if any selected account cannot be read safely. It includes spam/trash. It does not mutate mail or expose attachment bytes/paths. Use `shm schema reader.scan` for current fixed caps and contract details.
+
 ### Thread commands
 
 ```bash
