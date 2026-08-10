@@ -6,6 +6,7 @@ This is **not** an official SDK. It talks to Superhuman's private API and local 
 
 ## What it does
 
+- **Reader scan**: bounded, multi-account metadata or full-content reads from secure transient cache snapshots
 - **Threads**: search, list, and read cached thread messages
 - **Read receipts / opens**: inspect per-thread opens and the local Recent Opens feed
 - **Drafts**: create reply, reply-all, forward, and compose drafts
@@ -89,13 +90,18 @@ There is no alternate text/table mode. Humans can pipe to `jq`; agents always ge
 
 | Tier | Commands | Risk |
 |---|---|---|
-| **read** | `thread messages`, `thread userdata`, `thread list`, `thread search`, `opens`, `opens --recent`, `draft read`, `draft status`, `draft attest-render`, `attestation show`, `send --dry-run`, `send status`, `comment read`, `doctor`, `schema` | No mail mutation |
+| **read** | `reader scan`, `thread messages`, `thread userdata`, `thread list`, `thread search`, `opens`, `opens --recent`, `draft read`, `draft status`, `draft attest-render`, `attestation show`, `send --dry-run`, `send status`, `comment read`, `doctor`, `schema` | No mail mutation |
 | **write** | `setup`, `draft reply`, `draft reply-all`, `draft forward`, `draft compose`, `draft discard`, `draft attach`, `draft share`, `draft unshare`, `comment post`, `comment discard` | Reversible |
 | **irreversible** | `send` | Requires explicit `--confirm` or the narrow `--qualified-website-inbound` automation policy |
 
 ### Command surface
 
 ```bash
+# Production bounded local-cache scan (omitting --account scans all configured accounts)
+shm reader scan --since 2026-01-01T00:00:00Z --before 2026-01-02T00:00:00Z
+shm reader scan --since 2026-01-01T00:00:00Z --before 2026-01-02T00:00:00Z \
+  --account owner@example.com --projection full --thread THREAD_ID --person sender@example.com
+
 # Find threads first if you do not know the thread id
 shm thread search "kalgin follow up"
 shm thread search "invoice" --unread --limit 5
@@ -160,6 +166,16 @@ shm executor-contract
 shm schema
 shm schema draft.forward
 ```
+
+### Production reader contract
+
+`shm reader scan` is the only production scan surface. It returns the versioned `reader.scan` JSON contract (`contract_version: "1.0"`) and always warns `LOCAL_CACHE_COVERAGE_ONLY`. `--since` is inclusive, `--before` is exclusive, and both require exact UTC `Z` timestamps. Repeated thread selectors are ORed, repeated normalized-email person selectors are ORed across From/To/Cc/Bcc, and selector categories are ANDed. Repeated `--account` values must exactly match configured accounts; omitting the flag deterministically scans all configured accounts.
+
+The default `metadata` projection excludes subject, body, snippet, display-name, and filename fields recursively and never queries FTS. `full` exposes bounded direct cached content with `complete`, `truncated`, or `unavailable` coverage plus provenance; snippets and FTS are never promoted to complete bodies. Both projections include stable IDs, epoch-ms-derived UTC dates, normalized addresses, label/draft/read facts, and structural attachment facts without bytes or paths.
+
+Each selected account is queried once through a cryptographically random 0600 snapshot. The wrapped 4096-byte prefix is skipped in chunks, source identity is checked before and after copying, SQLite is opened `mode=ro&immutable=1` with `query_only`, and the snapshot is unlinked before schema validation or scan queries. Thread sort is filtered only at the lower bound, exact thread IDs are pushed down, and spam/trash remain included. Results are deterministically ordered by descending message date then account/thread/message ID. Fixed thread, message, record, participant, attachment, string, global-content, and output caps are reported in `data.limits`; any cap produces `coverage: "truncated"` with reasons. There is no provider cursor because one scan returns one bounded observed set. Any selected-account failure fails the whole command with privacy-safe errors.
+
+Inspect the machine-readable contract with `shm schema reader.scan`.
 
 ### Strict send semantics
 
