@@ -463,7 +463,7 @@ def _address(raw: Any, projection: str, field: str) -> tuple[dict[str, Any], str
 
 def _addresses(
     raw: Any, projection: str, field: str, *, singular: bool = False
-) -> tuple[list[dict[str, Any]], list[str], bool]:
+) -> tuple[list[dict[str, Any]], list[str]]:
     if raw is None:
         values: list[Any] = []
     elif singular and isinstance(raw, dict):
@@ -477,9 +477,7 @@ def _addresses(
             cls="conflict",
         )
     parsed = [_address(value, projection, field) for value in values]
-    truncated = len(parsed) > MAX_PARTICIPANTS_PER_MESSAGE
-    kept = parsed[:MAX_PARTICIPANTS_PER_MESSAGE]
-    return [item[0] for item in kept], [item[1] for item in parsed], truncated
+    return [item[0] for item in parsed], [item[1] for item in parsed]
 
 
 def _attachments(raw: Any, projection: str) -> tuple[list[dict[str, Any]], bool]:
@@ -564,12 +562,22 @@ def _message(
             cls="conflict",
         ) from exc
 
-    from_values, from_emails, p_from = _addresses(
+    from_values, from_emails = _addresses(
         raw.get("from"), projection, "from", singular=True
     )
-    to_values, to_emails, p_to = _addresses(raw.get("to"), projection, "to")
-    cc_values, cc_emails, p_cc = _addresses(raw.get("cc"), projection, "cc")
-    bcc_values, bcc_emails, p_bcc = _addresses(raw.get("bcc"), projection, "bcc")
+    to_values, to_emails = _addresses(raw.get("to"), projection, "to")
+    cc_values, cc_emails = _addresses(raw.get("cc"), projection, "cc")
+    bcc_values, bcc_emails = _addresses(raw.get("bcc"), projection, "bcc")
+    address_groups = [from_values, to_values, cc_values, bcc_values]
+    participants_remaining = MAX_PARTICIPANTS_PER_MESSAGE
+    kept_address_groups: list[list[dict[str, Any]]] = []
+    for values in address_groups:
+        kept_address_groups.append(values[:participants_remaining])
+        participants_remaining = max(0, participants_remaining - len(values))
+    participant_truncated = sum(len(values) for values in address_groups) > sum(
+        len(values) for values in kept_address_groups
+    )
+    from_values, to_values, cc_values, bcc_values = kept_address_groups
     attachments, attachments_truncated = _attachments(
         raw.get("attachments"), projection
     )
@@ -621,9 +629,7 @@ def _message(
             "cc": cc_values,
             "bcc": bcc_values,
         },
-        "addresses_coverage": "truncated"
-        if any((p_from, p_to, p_cc, p_bcc))
-        else "complete",
+        "addresses_coverage": "truncated" if participant_truncated else "complete",
         "labels": labels,
         "draft": {"is_draft": bool(draft_sources), "evidence": draft_sources},
         "read": {"is_unread": "UNREAD" in labels, "evidence": "message.labelIds"},
@@ -674,7 +680,7 @@ def _message(
     return (
         item,
         people,
-        any((p_from, p_to, p_cc, p_bcc)),
+        participant_truncated,
         attachments_truncated,
         field_content_truncated,
     )
@@ -716,7 +722,7 @@ def _scan_account(
             reasons.append("THREAD_LIMIT")
             rows = rows[:MAX_THREADS_PER_ACCOUNT]
         seen_message_ids: set[str] = set()
-        for row in rows:
+        for row_index, row in enumerate(rows):
             thread_rows += 1
             thread_id = _strict_string(row[0], "thread id", maximum=MAX_ID_CHARS)
             raw_json = row[1]
@@ -746,7 +752,9 @@ def _scan_account(
                     "A cached thread JSON record has an invalid message list",
                     cls="conflict",
                 )
-            for raw_message in thread["messages"]:
+            messages = thread["messages"]
+            inspected_before_thread = inspected
+            for raw_message in messages:
                 if inspected >= MAX_MESSAGES_INSPECTED_PER_ACCOUNT:
                     if "MESSAGE_SCAN_LIMIT" not in reasons:
                         reasons.append("MESSAGE_SCAN_LIMIT")
@@ -784,6 +792,14 @@ def _scan_account(
                 if field_content_truncated and "FIELD_CONTENT_LIMIT" not in reasons:
                     reasons.append("FIELD_CONTENT_LIMIT")
             if inspected >= MAX_MESSAGES_INSPECTED_PER_ACCOUNT:
+                unprocessed_messages = inspected - inspected_before_thread < len(
+                    messages
+                )
+                unprocessed_threads = row_index + 1 < len(rows)
+                if (
+                    unprocessed_messages or unprocessed_threads
+                ) and "MESSAGE_SCAN_LIMIT" not in reasons:
+                    reasons.append("MESSAGE_SCAN_LIMIT")
                 break
 
     records.sort(

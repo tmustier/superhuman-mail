@@ -584,7 +584,8 @@ class TestProjectionAndCaps:
         record = result["data"]["records"][0]
         assert record["addresses_coverage"] == "truncated"
         assert record["attachments_coverage"] == "truncated"
-        assert record["addresses"]["to"] == [{"email": "one@example.com"}]
+        assert record["addresses"]["from"] == [{"email": "sender@example.com"}]
+        assert record["addresses"]["to"] == []
         assert record["attachments"] == [
             {"size_bytes": 1, "media_type": None, "attachment_id": "one"}
         ]
@@ -595,6 +596,28 @@ class TestProjectionAndCaps:
             "RECORD_LIMIT",
         }
         assert result["data"]["cursor"] is None
+        # Filtering still evaluates all addresses, including those omitted by
+        # the shared representation cap.
+        person_result = run_scan(people=["two@example.com"])
+        assert person_result["data"]["record_count"] == 1
+
+    def test_exact_message_scan_cap_reports_unvisited_threads(
+        self, cache_config: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        source, _ = cache_config
+        monkeypatch.setattr(reader, "MAX_MESSAGES_INSPECTED_PER_ACCOUNT", 1)
+        create_wrapped_db(
+            source,
+            [
+                ("new", {"messages": [message("new", 1767225600002)]}, 1767225600002),
+                ("old", {"messages": [message("old", 1767225600001)]}, 1767225600001),
+            ],
+        )
+        result = run_scan()
+        assert result["data"]["record_count"] == 1
+        assert result["data"]["coverage"] == "truncated"
+        assert result["data"]["accounts"][0]["coverage"] == "truncated"
+        assert "MESSAGE_SCAN_LIMIT" in result["data"]["truncation_reasons"]
 
 
 class TestFailuresAndCLI:
