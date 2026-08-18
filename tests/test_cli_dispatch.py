@@ -5,8 +5,8 @@ import json
 from io import StringIO
 from unittest.mock import patch
 
+from superhuman_mail._envelope import emit, error, fail, ok
 from superhuman_mail.cli import main
-from superhuman_mail._envelope import emit, ok, fail, error
 
 
 class TestEmitReturnsExitCode:
@@ -111,3 +111,60 @@ class TestMainReturnsExitCode:
         assert code == 0
         messages.assert_called_once_with("t1", account="second@example.com")
         assert json.loads(capsys.readouterr().out)["command"] == "thread.messages"
+
+    def test_attachment_download_passes_output_selectors_and_account(self, capsys):
+        result = {
+            "status": "succeeded",
+            "command": "attachment.download",
+            "data": {"thread_id": "t1", "attachment_count": 1},
+            "errors": [],
+            "warnings": [],
+        }
+        with patch(
+            "superhuman_mail.cli._attachment.download",
+            return_value=result,
+        ) as download:
+            code = main([
+                "attachment",
+                "download",
+                "t1",
+                "--output",
+                "/tmp/files",
+                "--account",
+                "second@example.com",
+                "--message-id",
+                "m1",
+                "--attachment-id",
+                "a1",
+            ])
+        assert code == 0
+        download.assert_called_once_with(
+            "t1",
+            "/tmp/files",
+            account="second@example.com",
+            message_id="m1",
+            attachment_id="a1",
+        )
+        assert json.loads(capsys.readouterr().out)["command"] == "attachment.download"
+
+    def test_attachment_download_requires_output(self, capsys):
+        try:
+            main(["attachment", "download", "t1"])
+        except SystemExit as exc:
+            assert exc.code == 1
+        else:
+            raise AssertionError("attachment download accepted no output directory")
+        out = json.loads(capsys.readouterr().out)
+        assert out["errors"][0]["code"] == "INVALID_ARGS"
+        assert out["command"] == "attachment.download"
+
+    def test_attachment_help_states_local_metadata_boundary(self, capsys):
+        try:
+            main(["attachment", "download", "--help"])
+        except SystemExit as exc:
+            assert exc.code == 0
+        else:
+            raise AssertionError("attachment help did not exit")
+        help_text = capsys.readouterr().out
+        assert "local sync cache" in help_text
+        assert "do not need to be cached or previously opened" in help_text

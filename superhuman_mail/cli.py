@@ -2,6 +2,7 @@
 
 Usage:
     shm thread messages <thread_id>
+    shm attachment download <thread_id> --output <directory>
     shm opens <thread_id>
     shm opens --recent
     shm draft reply <thread_id> --body "..."
@@ -19,8 +20,9 @@ from typing import Any
 
 from . import _auth, _config, _local
 from . import approval as _approval
-from . import authority_client as _authority_client
+from . import attachment as _attachment
 from . import attestation as _attestation
+from . import authority_client as _authority_client
 from . import comment as _comment
 from . import draft as _draft
 from . import executor as _executor
@@ -34,7 +36,7 @@ from ._envelope import emit, error, fail, ok
 
 __version__ = "0.3.1"
 
-_COMMANDS = ["reader", "thread", "opens", "draft", "comment", "send", "attestation", "approval", "executor", "executor-contract", "setup", "doctor", "schema"]
+_COMMANDS = ["reader", "thread", "attachment", "opens", "draft", "comment", "send", "attestation", "approval", "executor", "executor-contract", "setup", "doctor", "schema"]
 
 # ---------------------------------------------------------------------------
 # Schema definition (for agent introspection)
@@ -71,6 +73,27 @@ SCHEMA: dict[str, dict[str, Any]] = {
         "examples": [
             "shm thread messages 19d001f35612a211",
             "shm thread messages 19d001f35612a211 --account owner@example.com",
+        ],
+    },
+    "attachment.download": {
+        "description": "Download received attachment bytes through Superhuman's authenticated media service",
+        "args": {
+            "thread_id": {"required": True, "type": "string"},
+            "--output": {"required": True, "type": "directory", "hint": "Created with private permissions when absent"},
+            "--account": {"required": False, "type": "string", "hint": "Email account to use (multi-account)"},
+            "--message-id": {"required": False, "type": "string", "hint": "Download attachments from one exact message"},
+            "--attachment-id": {"required": False, "type": "string", "hint": "Download one exact provider attachment"},
+        },
+        "limits": {
+            "attachment_bytes": _attachment.MAX_ATTACHMENT_BYTES,
+            "total_bytes": _attachment.MAX_TOTAL_BYTES,
+        },
+        "coverage": "Requires message metadata in Superhuman's local sync cache; attachment bytes need not be cached",
+        "safety": "read",
+        "examples": [
+            "shm attachment download 19d001f35612a211 --output ./attachments",
+            "shm attachment download 19d001f35612a211 --account owner@example.com --output ./attachments",
+            "shm attachment download 19d001f35612a211 --attachment-id ATTACHMENT_ID --output ./attachments",
         ],
     },
     "thread.userdata": {
@@ -720,6 +743,26 @@ def _build_parser() -> _ShmParser:
     t_search.add_argument("--fail-empty", action="store_true", help="Exit code 3 if no results")
     t_search.add_argument("--account")
 
+    # -- attachment --
+    attachment_p = _sub(sub, "attachment", help="Received attachment operations")
+    atsub = attachment_p.add_subparsers(dest="action")
+    at_download = _sub(
+        atsub,
+        "download",
+        help="Download received attachments",
+        schema_key="attachment.download",
+        description=(
+            "Download received attachment bytes. Requires the message metadata to be "
+            "present in Superhuman's local sync cache; the attachment bytes themselves "
+            "do not need to be cached or previously opened."
+        ),
+    )
+    at_download.add_argument("thread_id", help="Thread ID present in the local sync cache")
+    at_download.add_argument("--output", required=True, help="Destination directory")
+    at_download.add_argument("--account")
+    at_download.add_argument("--message-id")
+    at_download.add_argument("--attachment-id")
+
     # -- opens --
     opens_p = _sub(sub, "opens", help="Read read receipts / opens for a thread or recent activity", schema_key="opens")
     opens_p.add_argument("thread_id", nargs="?", default=None)
@@ -990,6 +1033,18 @@ def main(argv: list[str] | None = None) -> int:
             if args.fail_empty and result["status"] == "succeeded" and result["data"]["returned"] == 0:
                 return emit(result, exit_code=3)
             return emit(result)
+
+    # -- attachment --
+    elif args.command == "attachment":
+        if not hasattr(args, "action") or not args.action:
+            return emit(fail("attachment", [error("input", "MISSING_ACTION", False, "Use: shm attachment download")]))
+        return emit(_attachment.download(
+            args.thread_id,
+            args.output,
+            account=args.account,
+            message_id=args.message_id,
+            attachment_id=args.attachment_id,
+        ))
 
     # -- opens --
     elif args.command == "opens":

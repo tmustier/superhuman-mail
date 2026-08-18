@@ -12,9 +12,11 @@ Usage:
 """
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from . import approval as _approval
+from . import attachment as _attachment
 from . import attestation as _attestation
 from . import comment as _comment
 from . import draft as _draft
@@ -46,6 +48,14 @@ class _ThreadOps:
     def search(self, query: str, **kwargs: Any) -> dict[str, Any]:
         """Search threads."""
         return _thread.search(query, **kwargs)
+
+
+class _AttachmentOps:
+    """Read-only received-attachment operations."""
+
+    def download(self, thread_id: str, output: str | Path, **kwargs: Any) -> dict[str, Any]:
+        """Download received attachment bytes to a local directory."""
+        return _attachment.download(thread_id, output, **kwargs)
 
 
 class _OpensOps:
@@ -178,6 +188,7 @@ class Client:
 
     Groups operations by domain:
         client.thread.messages(...)
+        client.attachment.download(...)
         client.opens.per_thread(...)
         client.draft.create_reply(...)
         client.comment.post(...)
@@ -186,6 +197,7 @@ class Client:
 
     def __init__(self) -> None:
         self.thread = _ThreadOps()
+        self.attachment = _AttachmentOps()
         self.opens = _OpensOps()
         self.draft = _DraftOps()
         self.comment = _CommentOps()

@@ -8,6 +8,7 @@ This is **not** an official SDK. It talks to Superhuman's private API and local 
 
 - **Reader scan**: bounded, multi-account metadata or full-content reads from secure transient cache snapshots
 - **Threads**: search, list, and read cached thread messages
+- **Received attachments**: download byte-verified files through Superhuman's authenticated media service
 - **Read receipts / opens**: inspect per-thread opens and the local Recent Opens feed
 - **Drafts**: create reply, reply-all, forward, and compose drafts
 - **Draft management**: read, discard, attach files, share, and unshare drafts
@@ -90,7 +91,7 @@ There is no alternate text/table mode. Humans can pipe to `jq`; agents always ge
 
 | Tier | Commands | Risk |
 |---|---|---|
-| **read** | `reader scan`, `thread messages`, `thread userdata`, `thread list`, `thread search`, `opens`, `opens --recent`, `draft read`, `draft status`, `draft attest-render`, `attestation show`, `send --dry-run`, `send status`, `comment read`, `doctor`, `schema` | No mail mutation |
+| **read** | `reader scan`, `thread messages`, `thread userdata`, `thread list`, `thread search`, `attachment download`, `opens`, `opens --recent`, `draft read`, `draft status`, `draft attest-render`, `attestation show`, `send --dry-run`, `send status`, `comment read`, `doctor`, `schema` | No mail mutation |
 | **write** | `setup`, `draft reply`, `draft reply-all`, `draft forward`, `draft compose`, `draft discard`, `draft attach`, `draft share`, `draft unshare`, `comment post`, `comment discard` | Reversible |
 | **irreversible** | `send` | Requires explicit `--confirm` or the narrow `--qualified-website-inbound` automation policy |
 
@@ -112,6 +113,12 @@ shm thread list --unread --participants
 shm thread messages <thread_id>
 shm thread messages <thread_id> --account second@example.com   # multi-account
 shm thread userdata <thread_id>                 # advanced raw thread userdata
+
+# Download all received attachments, or select one exact message/attachment
+shm attachment download <thread_id> --output ./attachments
+shm attachment download <thread_id> --account second@example.com --output ./attachments
+shm attachment download <thread_id> --message-id <message_id> --output ./attachments
+shm attachment download <thread_id> --attachment-id <attachment_id> --output ./attachments
 
 # Read receipts / opens
 shm opens <thread_id>
@@ -177,6 +184,12 @@ The default `metadata` projection excludes subject, body, snippet, display-name,
 Each selected account is queried once through an anonymous 0600 snapshot that never has a directory entry. The wrapped 4096-byte prefix is skipped in chunks, source identity is checked before and after copying, and SQLite is opened from the verified descriptor with `mode=ro&immutable=1` plus `query_only`. Thread sort is filtered only at the lower bound, exact thread IDs are pushed down, and spam/trash remain included. Results are deterministically ordered by descending message date then account/thread/message ID. Fixed thread, message, record, participant, attachment, string, global-content, and output caps are reported in `data.limits`; any cap produces `coverage: "truncated"` with reasons. There is no provider cursor because one scan returns one bounded observed set. Any selected-account failure fails the whole command with privacy-safe errors.
 
 Inspect the machine-readable contract with `shm schema reader.scan`.
+
+### Received attachment downloads
+
+`shm attachment download` reads attachment metadata from the selected account's local cache, then streams bytes from the same authenticated `media.superhuman.com` route used by the desktop app. The command discovers the matching account-scoped media session without emitting cookie values or account-provider identity paths. It verifies every cached size, computes a SHA-256 digest, stages every file before committing output, and never overwrites an existing path. New output directories and files use `0700` and `0600` permissions. Duplicate names within one batch are deterministic: `report.pdf`, `report (2).pdf`, and so on.
+
+`--account` selects the same local mailbox as `thread messages`; the media identity is resolved across the app's signed-in accounts. Omit both selectors to download every received attachment in the thread, or pass exact `--message-id` / `--attachment-id` selectors. Message metadata must already be present in Superhuman's local sync cache, but attachment bytes do not need to be cached or previously opened. An unsynced thread fails explicitly with `THREAD_NOT_IN_LOCAL_CACHE`. The command is capped at 512 MiB per attachment and 1 GiB total per invocation. Inspect the machine-readable contract with `shm schema attachment.download`.
 
 ### Strict send semantics
 
@@ -244,6 +257,10 @@ c = Client()
 result = c.thread.messages("19d001f35612a211")
 result = c.thread.search("kalgin follow up")
 
+# Received attachments
+result = c.attachment.download("19d001f35612a211", "./attachments",
+                               account="owner@example.com")
+
 # Opens
 result = c.opens.per_thread("19d001f35612a211")
 result = c.opens.per_thread("19d001f35612a211", recipient="someone@example.com")
@@ -283,8 +300,9 @@ This repo uses a hybrid auth model:
 
 1. read local Superhuman desktop app state and cookies
 2. exchange those for API credentials/tokens
-3. call Superhuman backend endpoints directly
-4. read local SQLite cache for fast thread / search / recent-opens access
+3. use account-scoped desktop media cookies for received attachment bytes
+4. call Superhuman backend endpoints directly
+5. read local SQLite cache for fast thread / search / recent-opens access
 
 So the Superhuman desktop app must be installed and signed in.
 
@@ -299,6 +317,7 @@ superhuman_mail/
   _config.py                  # config loader
   _envelope.py                # JSON envelope helpers
   _local.py                   # local SQLite DB reads
+  attachment.py               # received attachment downloads
   cli.py                      # CLI implementation
   client.py                   # Python client
   thread.py                   # thread reads / search / list
@@ -332,6 +351,7 @@ pyproject.toml
 - execute-time lifecycle validation blocks terminal source-draft residue and existing pending/scheduled jobs
 - HTTP acceptance is pending, never proof of delivery; provider-confirmed immutable identity is required for `sent: true`
 - retries reconcile the durable attempt and never claim another provider call
+- received attachment downloads never mutate mail, never overwrite output, and write private `0600` files
 - draft/comment/share operations are reversible
 - `shm doctor` verifies config, local DB, keychain, and auth before you rely on the CLI
 

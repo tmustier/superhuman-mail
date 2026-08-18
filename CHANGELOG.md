@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- add read-only `shm attachment download` with multi-account media-session resolution, streamed size/digest verification, atomic no-overwrite output, tests, and live Gmail byte comparison
 - add the versioned, bounded, privacy-aware `shm reader scan` local-cache contract with secure transient snapshots and deterministic multi-account results
 - make the `shm` launcher self-contained with `uv` and install it on PATH through `scripts/setup.sh`, removing dependence on an activated repository virtualenv
 - update the declared `cryptography` floor to 49.0.0
