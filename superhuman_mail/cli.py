@@ -63,10 +63,14 @@ SCHEMA: dict[str, dict[str, Any]] = {
     },
     "thread.messages": {
         "description": "Read thread messages from local Superhuman DB",
-        "args": {"thread_id": {"required": True, "type": "string"}},
+        "args": {
+            "thread_id": {"required": True, "type": "string"},
+            "--account": {"required": False, "type": "string", "hint": "Email account to use (multi-account)"},
+        },
         "safety": "read",
         "examples": [
             "shm thread messages 19d001f35612a211",
+            "shm thread messages 19d001f35612a211 --account owner@example.com",
         ],
     },
     "thread.userdata": {
@@ -695,6 +699,7 @@ def _build_parser() -> _ShmParser:
 
     t_messages = _sub(tsub, "messages", help="Read messages from local DB", schema_key="thread.messages")
     t_messages.add_argument("thread_id")
+    t_messages.add_argument("--account")
 
     t_ud = _sub(tsub, "userdata", help="Read userdata from API (advanced)", schema_key="thread.userdata")
     t_ud.add_argument("thread_id")
@@ -972,7 +977,7 @@ def main(argv: list[str] | None = None) -> int:
         if not hasattr(args, "action") or not args.action:
             return emit(fail("thread", [error("input", "MISSING_ACTION", False, "Use: shm thread messages|userdata|list|search")]))
         elif args.action == "messages":
-            return emit(_thread.messages(args.thread_id))
+            return emit(_thread.messages(args.thread_id, account=args.account))
         elif args.action == "userdata":
             return emit(_thread.userdata(args.thread_id, account=args.account))
         elif args.action == "list":

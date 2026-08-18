@@ -84,3 +84,30 @@ class TestMainReturnsExitCode:
         assert str(run_setup.call_args.kwargs["config_path"]) == "/tmp/config.json"
         out = json.loads(capsys.readouterr().out)
         assert out["status"] == "succeeded"
+
+    def test_thread_messages_defaults_to_configured_account(self, capsys):
+        result = {
+            "status": "succeeded",
+            "command": "thread.messages",
+            "data": {"thread_id": "t1", "message_count": 0, "messages": []},
+            "errors": [],
+            "warnings": [],
+        }
+        with patch("superhuman_mail.cli._thread.messages", return_value=result) as messages:
+            code = main(["thread", "messages", "t1"])
+        assert code == 0
+        messages.assert_called_once_with("t1", account=None)
+
+    def test_thread_messages_passes_account(self, capsys):
+        result = {
+            "status": "succeeded",
+            "command": "thread.messages",
+            "data": {"thread_id": "t1", "message_count": 0, "messages": []},
+            "errors": [],
+            "warnings": [],
+        }
+        with patch("superhuman_mail.cli._thread.messages", return_value=result) as messages:
+            code = main(["thread", "messages", "t1", "--account", "second@example.com"])
+        assert code == 0
+        messages.assert_called_once_with("t1", account="second@example.com")
+        assert json.loads(capsys.readouterr().out)["command"] == "thread.messages"

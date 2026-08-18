@@ -110,6 +110,7 @@ shm thread list --unread --participants
 
 # Read thread data
 shm thread messages <thread_id>
+shm thread messages <thread_id> --account second@example.com   # multi-account
 shm thread userdata <thread_id>                 # advanced raw thread userdata
 
 # Read receipts / opens
