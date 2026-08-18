@@ -116,6 +116,19 @@ Used in `lib/superhuman_comments.py`:
 
 These are live-tested by our comments integration.
 
+### Received attachment downloads
+
+Used in `superhuman_mail/attachment.py`:
+
+- `GET https://media.superhuman.com/v2/attachments/<providerId>/<messageId>/<attachmentId>`
+  - returns received attachment bytes with the provider media type
+  - authenticates with the desktop app's host-scoped media session cookie, whose name is the same provider ID used in the path
+  - does not accept the private-API bearer token used by `mail.superhuman.com`
+
+The current Electron web bundle constructs this same route from `credential.getCachedProviderId()`, message metadata, and `attachmentId`. Its lower-level Gmail adapter can also request `content.googleapis.com/gmail/v1/users/me/messages/<messageId>/attachments/<attachmentId>`, but that route uses provider OAuth held inside the app. The media route is cleaner for `shm` because the desktop app already stores a separate encrypted, account-scoped media session.
+
+The CLI reads candidate media sessions without emitting cookie values or provider path identities, resolves the one that can access the selected local mailbox attachment, strips the cookie on any permitted cross-host redirect, streams to private temporary files, verifies cached sizes, computes SHA-256 digests, and atomically links final files without overwrite. This route has been live-validated against two received PDFs and against a second signed-in account; the PDF bytes matched independent Gmail API downloads exactly.
+
 ### Draft variants
 
 Used in `lib/superhuman_drafts.py`:
@@ -469,6 +482,8 @@ Both `drafts.share` and `drafts.unshare` are now live-validated.
 - `messages/send` works end-to-end from our own client for a self-send
 - reply, reply-all, and forward draft persistence use `userdata.writeMessage`
 - new-thread compose drafts can be created by writing to a synthetic draft thread id
+- received attachment bytes can be downloaded through the authenticated `media.superhuman.com/v2/attachments/...` route
+- downloaded bytes match independent Gmail API attachment bytes exactly in live validation
 - draft attachment bytes can be uploaded through `attachments.upload`
 - uploaded attachment metadata can be persisted through `userdata.writeMessage`
 - `scheduledFor` persists on drafts

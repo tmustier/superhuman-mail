@@ -2,8 +2,9 @@
 name: superhuman-mail
 description: >
   Interact with Superhuman email via the `shm` CLI — search threads, read messages,
-  inspect opens/read receipts, create drafts (reply, reply-all, forward, compose),
-  post/read/discard comments, upload attachments, share/unshare drafts, and send email.
+  inspect opens/read receipts, download received attachments, create drafts (reply,
+  reply-all, forward, compose), post/read/discard comments, upload attachments,
+  share/unshare drafts, and send email.
   Use when the user asks to work inside Superhuman rather than Gmail. Do NOT use when
   the user explicitly wants `gog gmail` or a Gmail-native workflow.
 ---
@@ -91,7 +92,7 @@ Use this command for bounded unified-inbox ingestion. Omitted `--account` means 
 
 Prefer the default `metadata` projection unless message content is necessary. Metadata recursively excludes subjects, bodies, snippets, display names, and filenames and never queries FTS. `full` includes only bounded direct-cache content with explicit coverage and provenance; never infer complete body content from a snippet, missing value, or FTS. Because `full` never queries FTS, `body.text.coverage` and `body.html.coverage` can report `unavailable` for messages whose text is still retrievable through `shm thread messages`. A `full` scan is therefore evidence about the reader's direct-cache projection, not proof that no body exists; when a body is actually required, follow up with `shm thread messages <thread_id> [--account email]`. Treat `LOCAL_CACHE_COVERAGE_ONLY` as a permanent provider warning. Check top-level and per-account coverage/truncation reasons before relying on completeness. No cursor is expected for the single deterministic bounded observed set.
 
-The reader makes an anonymous 0600 immutable/query-only snapshot per account, opens SQLite through its verified descriptor, and fails the whole command if any selected account cannot be read safely. It includes spam/trash. It does not mutate mail or expose attachment bytes/paths. Use `shm schema reader.scan` for current fixed caps and contract details.
+The reader makes an anonymous 0600 immutable/query-only snapshot per account, opens SQLite through its verified descriptor, and fails the whole command if any selected account cannot be read safely. It includes spam/trash. The reader command itself does not mutate mail or expose attachment bytes/paths; use `shm attachment download` for bytes. Use `shm schema reader.scan` for current fixed caps and contract details.
 
 ### Thread commands
 
@@ -101,6 +102,16 @@ shm thread userdata <thread_id>
 shm thread list [--limit N] [--unread] [--participants] [--fail-empty] [--account email]
 shm thread search <query> [--limit N] [--unread] [--participants] [--fail-empty] [--account email]
 ```
+
+### Received attachment downloads
+
+```bash
+shm attachment download <thread_id> --output <directory> [--account email]
+shm attachment download <thread_id> --output <directory> [--message-id id]
+shm attachment download <thread_id> --output <directory> [--attachment-id id]
+```
+
+Omitting selectors downloads every received attachment in the thread. The command uses the desktop app's authenticated media route, verifies cached byte sizes, computes SHA-256 digests, stages all files before committing, creates private `0700`/`0600` output, and never overwrites an existing path. Duplicate names in one batch become `name (2).ext`, `name (3).ext`, and so on. `--account` selects the local mailbox exactly as it does for `thread messages`; the matching signed-in media identity is resolved automatically. Use `shm schema attachment.download` for the 512 MiB per-file and 1 GiB total limits.
 
 ### Opens / read receipts
 
@@ -196,7 +207,15 @@ shm attestation show <attestation_id> --account owner@example.com --thread-id <t
 
 The external broker accepts only account/thread/draft/delay semantics, obtains its authoritative attestation from the trusted prepare socket, and issues a single-use receipt after explicit approval. Then let the credential-isolated executor consume that receipt; do not supply evidence bytes or invoke local/raw transport. Use `shm executor status RECEIPT_ID` during grace/reconciliation and require `sent_provider_confirmed`. This general flow is separate from the qualified website-inbound policy above.
 
-### 2. Get read receipts / recent opens
+### 2. Download received attachments
+
+```bash
+shm attachment download <thread_id> --account owner@example.com --output ./attachments
+```
+
+Use the exact `--message-id` or `--attachment-id` selector when only one subset is needed. Check the returned size and SHA-256 metadata before handing files to another workflow.
+
+### 3. Get read receipts / recent opens
 
 Per thread:
 
@@ -212,7 +231,7 @@ shm opens --recent --limit 10
 shm opens --recent --recipient someone@example.com
 ```
 
-### 3. Schedule a follow-up with attachment
+### 4. Schedule a follow-up with attachment
 
 This is a multi-step flow — create the draft first to get the draft_id, then attach:
 
@@ -234,7 +253,7 @@ To cancel the send if someone replies before the scheduled time, add `--abort-on
 shm draft reply <thread_id> --body "Following up..." --scheduled-for "2026-03-26T09:00:00Z" --abort-on-reply
 ```
 
-### 4. Share a draft for team review
+### 5. Share a draft for team review
 
 ```bash
 shm draft reply <thread_id> --body "..."
@@ -243,10 +262,11 @@ shm draft share <thread_id> <draft_id>
 
 Use `draft unshare` to revoke it later.
 
-### 5. Read raw thread metadata only when needed
+### 6. Read raw thread metadata only when needed
 
 Prefer the specialized commands first:
 - `thread messages`
+- `attachment download`
 - `draft read`
 - `comment read`
 - `opens`
@@ -275,6 +295,8 @@ If a command fails:
 - `network` → retry if `retryable: true`
 - `input` → check thread id / draft id / flags
 - `not-found` → search/list first to confirm IDs
+- `MEDIA_SESSION_EXPIRED` → open Superhuman, confirm the account is signed in, then retry
+- `OUTPUT_CONFLICT` → choose an empty output directory; downloads never overwrite files
 
 ## Quick examples
 
@@ -284,6 +306,9 @@ shm thread search "kalgin follow up"
 
 # Read it
 shm thread messages 19c76b5e86217b7b
+
+# Download its received attachments
+shm attachment download 19c76b5e86217b7b --output ./attachments
 
 # Check opens
 shm opens 19c76b5e86217b7b
