@@ -157,3 +157,14 @@ class TestMainReturnsExitCode:
         out = json.loads(capsys.readouterr().out)
         assert out["errors"][0]["code"] == "INVALID_ARGS"
         assert out["command"] == "attachment.download"
+
+    def test_attachment_help_states_local_metadata_boundary(self, capsys):
+        try:
+            main(["attachment", "download", "--help"])
+        except SystemExit as exc:
+            assert exc.code == 0
+        else:
+            raise AssertionError("attachment help did not exit")
+        help_text = capsys.readouterr().out
+        assert "local sync cache" in help_text
+        assert "do not need to be cached or previously opened" in help_text

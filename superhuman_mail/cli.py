@@ -88,6 +88,7 @@ SCHEMA: dict[str, dict[str, Any]] = {
             "attachment_bytes": _attachment.MAX_ATTACHMENT_BYTES,
             "total_bytes": _attachment.MAX_TOTAL_BYTES,
         },
+        "coverage": "Requires message metadata in Superhuman's local sync cache; attachment bytes need not be cached",
         "safety": "read",
         "examples": [
             "shm attachment download 19d001f35612a211 --output ./attachments",
@@ -750,9 +751,14 @@ def _build_parser() -> _ShmParser:
         "download",
         help="Download received attachments",
         schema_key="attachment.download",
+        description=(
+            "Download received attachment bytes. Requires the message metadata to be "
+            "present in Superhuman's local sync cache; the attachment bytes themselves "
+            "do not need to be cached or previously opened."
+        ),
     )
-    at_download.add_argument("thread_id")
-    at_download.add_argument("--output", required=True)
+    at_download.add_argument("thread_id", help="Thread ID present in the local sync cache")
+    at_download.add_argument("--output", required=True, help="Destination directory")
     at_download.add_argument("--account")
     at_download.add_argument("--message-id")
     at_download.add_argument("--attachment-id")

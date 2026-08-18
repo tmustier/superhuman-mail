@@ -500,7 +500,16 @@ def download(
     command = "attachment.download"
     staged: list[StagedAttachment] = []
     try:
-        raw_thread = _local.get_thread_json(thread_id, account)
+        try:
+            raw_thread = _local.get_thread_json(thread_id, account)
+        except RuntimeError as exc:
+            if str(exc).startswith("Thread not found in local DB:"):
+                raise AttachmentDownloadError(
+                    "THREAD_NOT_IN_LOCAL_CACHE",
+                    "The thread metadata is not present in Superhuman's local sync cache",
+                    error_class="not-found",
+                ) from exc
+            raise
         specs = _attachment_specs(
             raw_thread,
             message_id=message_id,

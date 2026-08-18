@@ -127,7 +127,7 @@ Used in `superhuman_mail/attachment.py`:
 
 The current Electron web bundle constructs this same route from `credential.getCachedProviderId()`, message metadata, and `attachmentId`. Its lower-level Gmail adapter can also request `content.googleapis.com/gmail/v1/users/me/messages/<messageId>/attachments/<attachmentId>`, but that route uses provider OAuth held inside the app. The media route is cleaner for `shm` because the desktop app already stores a separate encrypted, account-scoped media session.
 
-The CLI reads candidate media sessions without emitting cookie values or provider path identities, resolves the one that can access the selected local mailbox attachment, strips the cookie on any permitted cross-host redirect, streams to private temporary files, verifies cached sizes, computes SHA-256 digests, and atomically links final files without overwrite. This route has been live-validated against two received PDFs and against a second signed-in account; the PDF bytes matched independent Gmail API downloads exactly.
+The CLI reads candidate media sessions without emitting cookie values or provider path identities, resolves the one that can access the selected local mailbox attachment, strips the cookie on any permitted cross-host redirect, streams to private temporary files, verifies cached sizes, computes SHA-256 digests, and atomically links final files without overwrite. It requires message and attachment identifiers to exist in Superhuman's local sync cache, but does not require cached attachment bytes or a previously opened message. This route has been live-validated against two received PDFs and against a second signed-in account; the PDF bytes matched independent Gmail API downloads exactly.
 
 ### Draft variants
 

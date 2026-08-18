@@ -22,7 +22,7 @@ Received-message attachment metadata already exists in each account's local thre
 - `size`
 - `inline`
 
-The previous normalized `thread messages` projection retained filename/type/size but discarded the identifiers required to fetch bytes. The downloader therefore reads raw thread JSON internally while keeping the existing public message projection unchanged.
+The previous normalized `thread messages` projection retained filename/type/size but discarded the identifiers required to fetch bytes. The downloader therefore reads raw thread JSON internally while keeping the existing public message projection unchanged. This makes local message metadata a real coverage boundary: attachment bytes need not be cached or previously opened, but a thread the desktop app has not synced into its local store cannot be addressed and fails explicitly as `THREAD_NOT_IN_LOCAL_CACHE`.
 
 ## Safety decisions
 

@@ -339,6 +339,21 @@ def test_selector_downloads_only_the_exact_attachment(tmp_path: Path) -> None:
     assert (tmp_path / "out" / "second.pdf").read_bytes() == second_bytes
 
 
+def test_thread_missing_from_local_cache_has_explicit_safe_error(
+    tmp_path: Path,
+) -> None:
+    with patch(
+        "superhuman_mail.attachment._local.get_thread_json",
+        side_effect=RuntimeError("Thread not found in local DB: private-thread-id"),
+    ):
+        result = attachment.download("private-thread-id", tmp_path / "out")
+
+    assert result["status"] == "failed"
+    assert result["errors"][0]["code"] == "THREAD_NOT_IN_LOCAL_CACHE"
+    assert "private-thread-id" not in json.dumps(result)
+    assert not (tmp_path / "out").exists()
+
+
 def test_wrong_attachment_selector_fails_without_network(tmp_path: Path) -> None:
     raw_attachment, _data = _attachment("attachment-1", "report.pdf", b"expected")
 

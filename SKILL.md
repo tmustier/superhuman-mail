@@ -111,7 +111,7 @@ shm attachment download <thread_id> --output <directory> [--message-id id]
 shm attachment download <thread_id> --output <directory> [--attachment-id id]
 ```
 
-Omitting selectors downloads every received attachment in the thread. The command uses the desktop app's authenticated media route, verifies cached byte sizes, computes SHA-256 digests, stages all files before committing, creates private `0700`/`0600` output, and never overwrites an existing path. Duplicate names in one batch become `name (2).ext`, `name (3).ext`, and so on. `--account` selects the local mailbox exactly as it does for `thread messages`; the matching signed-in media identity is resolved automatically. Use `shm schema attachment.download` for the 512 MiB per-file and 1 GiB total limits.
+Omitting selectors downloads every received attachment in the thread. The command uses the desktop app's authenticated media route, verifies cached byte sizes, computes SHA-256 digests, stages all files before committing, creates private `0700`/`0600` output, and never overwrites an existing path. Duplicate names in one batch become `name (2).ext`, `name (3).ext`, and so on. `--account` selects the local mailbox exactly as it does for `thread messages`; the matching signed-in media identity is resolved automatically. Message metadata must already be present in Superhuman's local sync cache, but attachment bytes need not be cached or previously opened; unsynced threads fail as `THREAD_NOT_IN_LOCAL_CACHE`. Use `shm schema attachment.download` for the 512 MiB per-file and 1 GiB total limits.
 
 ### Opens / read receipts
 
