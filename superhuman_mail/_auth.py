@@ -8,12 +8,13 @@ from __future__ import annotations
 
 import hashlib
 import json
-import sqlite3
 import os
+import sqlite3
 import subprocess
 import sys
 import time
 import urllib.request
+from dataclasses import dataclass, field
 from typing import Any
 
 from . import _config
@@ -21,6 +22,15 @@ from . import _config
 # ---------------------------------------------------------------------------
 # Cookie decryption (reads Superhuman Electron app's encrypted cookie DB)
 # ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class MediaSessionCredential:
+    """One account-scoped media session without a printable secret value."""
+
+    provider_id: str
+    cookie_value: str = field(repr=False)
+
 
 def _get_encryption_key() -> bytes:
     result = subprocess.run(
@@ -69,6 +79,48 @@ def _get_session_cookie() -> str:
         return _decrypt_cookie(row[0], key)
     finally:
         conn.close()
+
+
+def media_session_credentials() -> list[MediaSessionCredential]:
+    """Read every signed-in account's media cookie from the desktop app.
+
+    The provider ID is needed in the media URL and is also the cookie name.
+    Secret values remain encapsulated in ``MediaSessionCredential`` and must
+    never be emitted by callers.
+    """
+    cookie_db = _config.superhuman_base() / "Cookies"
+    conn = sqlite3.connect(f"file:{cookie_db}?mode=ro&immutable=1", uri=True)
+    try:
+        rows = conn.execute(
+            "SELECT name, encrypted_value FROM cookies "
+            "WHERE host_key='media.superhuman.com' ORDER BY name"
+        ).fetchall()
+    finally:
+        conn.close()
+
+    encrypted = [
+        (str(name), value)
+        for name, value in rows
+        if str(name or "").isdigit() and len(str(name)) >= 10
+    ]
+    if not encrypted:
+        raise RuntimeError(
+            "Superhuman media session cookie not found — open the desktop app and sign in"
+        )
+
+    key = _get_encryption_key()
+    preferred = _config.api("google_id")
+    credentials = [
+        MediaSessionCredential(
+            provider_id=name,
+            cookie_value=_decrypt_cookie(value, key),
+        )
+        for name, value in encrypted
+    ]
+    return sorted(
+        credentials,
+        key=lambda credential: (credential.provider_id != preferred, credential.provider_id),
+    )
 
 
 # ---------------------------------------------------------------------------
