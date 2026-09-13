@@ -16,7 +16,7 @@ import time
 import urllib.request
 from typing import Any
 
-from . import _config
+from . import _config, _http
 
 # ---------------------------------------------------------------------------
 # Cookie decryption (reads Superhuman Electron app's encrypted cookie DB)
@@ -114,6 +114,7 @@ def _get_id_token() -> str:
     session_cookie = _get_session_cookie()
 
     headers = {
+        **_http.client_headers(),
         "Content-Type": "application/json",
         "Origin": "https://mail.superhuman.com",
         "x-device-id": device_id,
@@ -159,6 +160,7 @@ def api_headers() -> dict[str, str]:
     """Return headers for authenticated Superhuman API calls."""
     cfg = _config.load()["superhuman_api"]
     return {
+        **_http.client_headers(),
         "Content-Type": "application/json",
         "Authorization": f"Bearer {_get_id_token()}",
         "Origin": "https://mail.superhuman.com",

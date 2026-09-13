@@ -8,7 +8,14 @@ from unittest.mock import patch
 
 import pytest
 
-from superhuman_mail.setup import extract_accounts, extract_db_file, extract_email, extract_google_id, extract_team_id
+from superhuman_mail.setup import (
+    _request_auth_data,
+    extract_accounts,
+    extract_db_file,
+    extract_email,
+    extract_google_id,
+    extract_team_id,
+)
 
 
 def _write_config(path: Path, tab_paths: list[str]) -> None:
@@ -124,6 +131,29 @@ class TestExtractDbFile:
 
 
 class TestExtractGoogleId:
+    def test_auth_exchange_identifies_shm_in_both_requests(self):
+        class Response:
+            headers: dict[str, str] = {}
+
+            def read(self) -> bytes:
+                return b'{"csrfToken":"csrf","authData":{"idToken":"id"}}'
+
+        requests = []
+
+        def fake_urlopen(request, timeout):
+            requests.append(request)
+            return Response()
+
+        with (
+            patch("superhuman_mail.setup._get_encryption_key", return_value=b"key"),
+            patch("superhuman_mail.setup._decrypt_session_cookie", return_value="session"),
+            patch("superhuman_mail.setup.urllib.request.urlopen", side_effect=fake_urlopen),
+        ):
+            _request_auth_data("one@example.com", "1111111111", "device-1", "version-1")
+
+        assert len(requests) == 2
+        assert all(request.get_header("User-agent") == "shm" for request in requests)
+
     def test_matching_google_id_is_selected_for_email(self):
         def fake_request(email: str, google_id: str, device_id: str, version: str) -> dict[str, object]:
             return {

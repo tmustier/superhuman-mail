@@ -25,6 +25,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from . import _http
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -381,6 +383,7 @@ def _request_auth_data(email: str, google_id: str, device_id: str, version: str)
     session_cookie = _decrypt_session_cookie(google_id, key)
 
     headers = {
+        **_http.client_headers(),
         "Content-Type": "application/json",
         "Origin": "https://mail.superhuman.com",
         "x-device-id": device_id,

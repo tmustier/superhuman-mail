@@ -22,3 +22,18 @@ def test_runtime_provider_token_rejects_whitespace(monkeypatch):
     monkeypatch.setenv("SHM_AUTH_TOKEN_STDIN", "1")
     with patch("sys.stdin", io.StringIO("not a token\n")), pytest.raises(RuntimeError, match="Invalid runtime"):
         _auth._get_id_token()
+
+
+def test_api_headers_identify_shm_instead_of_using_urllib_default(monkeypatch):
+    monkeypatch.delenv("SHM_AUTH_TOKEN_STDIN", raising=False)
+    with (
+        patch("superhuman_mail._auth._get_id_token", return_value="synthetic-runtime-token"),
+        patch(
+            "superhuman_mail._auth._config.load",
+            return_value={"superhuman_api": {"device_id": "device-1", "version": "version-1"}},
+        ),
+    ):
+        headers = _auth.api_headers()
+
+    assert headers["User-Agent"] == "shm"
+    assert headers["Authorization"] == "Bearer synthetic-runtime-token"
