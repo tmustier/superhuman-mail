@@ -59,13 +59,13 @@ def _build_html(text: str, mentions: list[dict[str, str]] | None = None) -> str:
             if email and email != name:
                 escaped = escaped.replace(f"@{html_mod.escape(email)}", tag)
 
-    # comments.write currently rejects <br> tags with HTTP 400. Render each
-    # non-empty source line as a paragraph instead: this preserves readable
-    # line separation while staying inside the endpoint's accepted HTML subset.
-    # Do not revert to literal newlines inside one <p>; HTML collapses them.
-    lines = (line for line in escaped.strip("\n").splitlines() if line.strip())
-    body = "".join(f"<p>{line}</p>" for line in lines)
-    return f"<div>{body}</div>" if body else "<div><p></p></div>"
+    # comments.write rejects <br> tags. Superhuman also removes paragraph
+    # margins, so an interior blank line needs its own non-empty paragraph.
+    if not escaped.strip():
+        return "<div><p></p></div>"
+    lines = escaped.strip("\n").splitlines()
+    body = "".join(f"<p>{line}</p>" if line.strip() else "<p>\u00a0</p>" for line in lines)
+    return f"<div>{body}</div>"
 
 
 # ---------------------------------------------------------------------------

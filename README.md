@@ -11,7 +11,7 @@ This is **not** an official SDK. It talks to Superhuman's private API and local 
 - **Read receipts / opens**: inspect per-thread opens and the local Recent Opens feed
 - **Drafts**: create reply, reply-all, forward, and compose drafts
 - **Draft management**: read, discard, attach files, share, and unshare drafts
-- **Comments**: post, read, and discard thread comments
+- **Comments**: post, read, and discard thread comments, preserving line breaks and blank paragraph spacing
 - **Send safety**: typed lifecycle, exact live-render attestation, local attempt reconciliation, and provider-confirmed completion
 - **Setup / doctor**: bootstrap config from the local Superhuman app and verify auth
 
