@@ -693,6 +693,7 @@ def _scan_account(
     since_ms = _epoch_ms(request.since)
     reasons: list[str] = []
     records: list[dict[str, Any]] = []
+    skipped_records = 0
     inspected = 0
     eligible = 0
     thread_rows = 0
@@ -731,27 +732,18 @@ def _scan_account(
                 or not _valid_text(raw_json)
                 or len(raw_json.encode("utf-8")) > MAX_ROW_JSON_BYTES
             ):
-                raise ReaderError(
-                    "MALFORMED_CACHE_JSON",
-                    "A cached thread JSON record is invalid or oversized",
-                    cls="conflict",
-                )
+                skipped_records += 1
+                continue
             try:
                 thread = json.loads(raw_json)
-            except (json.JSONDecodeError, UnicodeError) as exc:
-                raise ReaderError(
-                    "MALFORMED_CACHE_JSON",
-                    "A cached thread JSON record is malformed",
-                    cls="conflict",
-                ) from exc
+            except (ValueError, RecursionError):
+                skipped_records += 1
+                continue
             if not isinstance(thread, dict) or not isinstance(
                 thread.get("messages"), list
             ):
-                raise ReaderError(
-                    "MALFORMED_CACHE_JSON",
-                    "A cached thread JSON record has an invalid message list",
-                    cls="conflict",
-                )
+                skipped_records += 1
+                continue
             messages = thread["messages"]
             inspected_before_thread = inspected
             for raw_message in messages:
@@ -760,13 +752,19 @@ def _scan_account(
                         reasons.append("MESSAGE_SCAN_LIMIT")
                     break
                 inspected += 1
-                (
-                    item,
-                    participant_emails,
-                    participant_truncated,
-                    attachment_truncated,
-                    field_content_truncated,
-                ) = _message(raw_message, account, thread_id, request.projection)
+                try:
+                    (
+                        item,
+                        participant_emails,
+                        participant_truncated,
+                        attachment_truncated,
+                        field_content_truncated,
+                    ) = _message(raw_message, account, thread_id, request.projection)
+                except ReaderError as exc:
+                    if exc.code != "MALFORMED_CACHE_JSON":
+                        raise
+                    skipped_records += 1
+                    continue
                 message_id = item["message_id"]
                 identity = f"{thread_id}\0{message_id}"
                 if identity in seen_message_ids:
@@ -813,6 +811,8 @@ def _scan_account(
     if len(records) > MAX_MESSAGES_PER_ACCOUNT:
         reasons.append("ACCOUNT_MESSAGE_LIMIT")
         records = records[:MAX_MESSAGES_PER_ACCOUNT]
+    if skipped_records:
+        reasons.append("MALFORMED_CACHE_RECORDS")
     facts = {
         "account_id": account,
         "snapshot_bytes": snapshot_bytes,
@@ -820,6 +820,7 @@ def _scan_account(
         "messages_inspected": inspected,
         "messages_eligible": eligible,
         "messages_emitted": len(records),
+        "skipped_records": skipped_records,
         "coverage": "truncated" if reasons else "complete",
         "truncation_reasons": reasons,
         "query": {

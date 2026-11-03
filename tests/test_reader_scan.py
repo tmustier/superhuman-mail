@@ -621,20 +621,111 @@ class TestProjectionAndCaps:
 
 
 class TestFailuresAndCLI:
+    @pytest.mark.parametrize("projection", ["metadata", "full"])
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("isDraft", "Secret invalid draft evidence"),
+            ("draftId", {}),
+            ("superhumanDraftId", []),
+            ("superhumanOwnDraftId", 42),
+        ],
+    )
+    def test_malformed_draft_does_not_block_valid_messages(
+        self, cache_config: tuple[Path, Path], projection: str, field: str, value: Any
+    ) -> None:
+        first, second = cache_config
+        when = 1767225600000
+        # Outside both the requested date window and person selector, but in a
+        # recently updated thread: validation used to abort before filtering.
+        draft = message(
+            "bad-draft", when - 1, sender="unrelated@example.com", is_draft=True
+        )
+        draft[field] = value
+        create_wrapped_db(
+            first,
+            [
+                (
+                    "mixed",
+                    {
+                        "messages": [
+                            message("new", when + 2),
+                            draft,
+                            message("old", when),
+                        ]
+                    },
+                    when + 2,
+                )
+            ],
+        )
+        create_wrapped_db(
+            second, [("other", {"messages": [message("other", when + 1)]}, when + 1)]
+        )
+        result = run_scan(
+            accounts=[], projection=projection, people=["sender@example.com"]
+        )
+        assert result["status"] == "succeeded"
+        assert result["errors"] == []
+        assert [record["message_id"] for record in result["data"]["records"]] == [
+            "new",
+            "other",
+            "old",
+        ]
+        assert result["data"]["coverage"] == "truncated"
+        assert result["data"]["truncation_reasons"] == ["MALFORMED_CACHE_RECORDS"]
+        facts, other_facts = result["data"]["accounts"]
+        assert facts["coverage"] == "truncated"
+        assert facts["messages_inspected"] == 3
+        assert facts["skipped_records"] == 1
+        assert other_facts["coverage"] == "complete"
+        assert other_facts["skipped_records"] == 0
+        assert "Secret invalid draft evidence" not in json.dumps(result)
+
+    def test_skipped_records_still_obey_inspection_cap(
+        self, cache_config: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        source, _ = cache_config
+        monkeypatch.setattr(reader, "MAX_MESSAGES_INSPECTED_PER_ACCOUNT", 3)
+        drafts = [
+            message(f"draft-{index}", 1767225600000, is_draft=True)
+            for index in range(4)
+        ]
+        for draft in drafts:
+            draft["draftId"] = {}
+        create_wrapped_db(source, [("t", {"messages": drafts}, 1767225600000)])
+        result = run_scan()
+        assert result["status"] == "succeeded"
+        assert result["data"]["record_count"] == 0
+        assert set(result["data"]["truncation_reasons"]) == {
+            "MALFORMED_CACHE_RECORDS",
+            "MESSAGE_SCAN_LIMIT",
+        }
+        facts = result["data"]["accounts"][0]
+        assert facts["messages_inspected"] == 3
+        assert facts["skipped_records"] == 3
+
     @pytest.mark.parametrize(
         "payload",
         ["{bad json", json.dumps({"messages": [42]}), json.dumps({"not_messages": []})],
     )
-    def test_malformed_json_fails_whole_command_privately(
+    def test_malformed_json_is_isolated_privately(
         self, cache_config: tuple[Path, Path], payload: str
     ) -> None:
         source, _ = cache_config
-        create_wrapped_db(source, [("t", payload, 1767225600000)])
+        create_wrapped_db(
+            source,
+            [
+                ("bad", payload, 1767225600001),
+                ("valid", {"messages": [message("m", 1767225600000)]}, 1767225600000),
+            ],
+        )
         result = run_scan()
-        assert result["status"] == "failed"
-        assert error_code(result) == "MALFORMED_CACHE_JSON"
-        assert result["data"] is None
+        assert result["status"] == "succeeded"
+        assert [record["message_id"] for record in result["data"]["records"]] == ["m"]
+        assert result["data"]["coverage"] == "truncated"
+        assert result["data"]["accounts"][0]["skipped_records"] == 1
         assert str(source) not in json.dumps(result)
+        assert "Secret" not in json.dumps(result)
 
     def test_metadata_executes_one_threads_query_and_never_fts(
         self, cache_config: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch

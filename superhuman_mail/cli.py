@@ -54,6 +54,7 @@ SCHEMA: dict[str, dict[str, Any]] = {
         },
         "selector_semantics": "OR within thread/person categories; AND across categories and the time window",
         "coverage": "One deterministic bounded observed set; no provider cursor. Truncation is explicit.",
+        "malformed_records": "Malformed messages or unreadable thread JSON are skipped with truncated coverage and MALFORMED_CACHE_RECORDS. Per-account skipped_records counts malformed messages and unreadable thread rows; cache/snapshot failures still fail the command.",
         "limits": _reader.contract_limits(),
         "safety": "read",
         "examples": [
