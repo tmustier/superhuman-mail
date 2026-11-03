@@ -676,23 +676,16 @@ class TestFailuresAndCLI:
         facts, other_facts = result["data"]["accounts"]
         assert facts["coverage"] == "truncated"
         assert facts["messages_inspected"] == 3
-        assert facts["skipped_records"] == {
-            "count": 1,
-            "details": [{"thread_id": "mixed", "message_id": "bad-draft"}],
-            "details_truncated": False,
-        }
+        assert facts["skipped_records"] == 1
         assert other_facts["coverage"] == "complete"
-        assert other_facts["skipped_records"]["count"] == 0
-        diagnostics = json.dumps(facts["skipped_records"])
-        assert "Secret" not in diagnostics
+        assert other_facts["skipped_records"] == 0
         assert "Secret invalid draft evidence" not in json.dumps(result)
 
-    def test_skipped_records_still_obey_inspection_and_diagnostic_caps(
+    def test_skipped_records_still_obey_inspection_cap(
         self, cache_config: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
     ) -> None:
         source, _ = cache_config
         monkeypatch.setattr(reader, "MAX_MESSAGES_INSPECTED_PER_ACCOUNT", 3)
-        monkeypatch.setattr(reader, "MAX_SKIPPED_RECORD_DETAILS_PER_ACCOUNT", 2)
         drafts = [
             message(f"draft-{index}", 1767225600000, is_draft=True)
             for index in range(4)
@@ -709,14 +702,7 @@ class TestFailuresAndCLI:
         }
         facts = result["data"]["accounts"][0]
         assert facts["messages_inspected"] == 3
-        assert facts["skipped_records"] == {
-            "count": 3,
-            "details": [
-                {"thread_id": "t", "message_id": "draft-0"},
-                {"thread_id": "t", "message_id": "draft-1"},
-            ],
-            "details_truncated": True,
-        }
+        assert facts["skipped_records"] == 3
 
     @pytest.mark.parametrize(
         "payload",
@@ -737,11 +723,7 @@ class TestFailuresAndCLI:
         assert result["status"] == "succeeded"
         assert [record["message_id"] for record in result["data"]["records"]] == ["m"]
         assert result["data"]["coverage"] == "truncated"
-        assert result["data"]["accounts"][0]["skipped_records"] == {
-            "count": 1,
-            "details": [{"thread_id": "bad", "message_id": None}],
-            "details_truncated": False,
-        }
+        assert result["data"]["accounts"][0]["skipped_records"] == 1
         assert str(source) not in json.dumps(result)
         assert "Secret" not in json.dumps(result)
 

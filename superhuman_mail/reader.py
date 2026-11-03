@@ -33,7 +33,6 @@ MAX_MESSAGES_INSPECTED_PER_ACCOUNT = 10_000
 MAX_MESSAGES_PER_ACCOUNT = 2_000
 MAX_RECORDS = 1_000
 MAX_SELECTOR_VALUES = 100
-MAX_SKIPPED_RECORD_DETAILS_PER_ACCOUNT = 20
 MAX_PARTICIPANTS_PER_MESSAGE = 100
 MAX_PARTICIPANTS = 5_000
 MAX_ATTACHMENTS_PER_MESSAGE = 50
@@ -687,23 +686,6 @@ def _message(
     )
 
 
-def _record_skip(
-    skipped: dict[str, Any], thread_id: str, raw_message: Any = None
-) -> None:
-    """Count isolated records, retaining only bounded, validated identifiers."""
-    skipped["count"] += 1
-    if len(skipped["details"]) >= MAX_SKIPPED_RECORD_DETAILS_PER_ACCOUNT:
-        skipped["details_truncated"] = True
-        return
-    message_id = None
-    if isinstance(raw_message, dict):
-        with contextlib.suppress(ReaderError):
-            message_id = _strict_string(
-                raw_message.get("id"), "message id", maximum=MAX_ID_CHARS
-            )
-    skipped["details"].append({"thread_id": thread_id, "message_id": message_id})
-
-
 def _scan_account(
     request: ScanRequest, account: str, account_config: dict[str, Any]
 ) -> tuple[list[dict[str, Any]], dict[str, Any], list[str]]:
@@ -711,7 +693,7 @@ def _scan_account(
     since_ms = _epoch_ms(request.since)
     reasons: list[str] = []
     records: list[dict[str, Any]] = []
-    skipped: dict[str, Any] = {"count": 0, "details": [], "details_truncated": False}
+    skipped_records = 0
     inspected = 0
     eligible = 0
     thread_rows = 0
@@ -745,23 +727,22 @@ def _scan_account(
             thread_rows += 1
             thread_id = _strict_string(row[0], "thread id", maximum=MAX_ID_CHARS)
             raw_json = row[1]
-            # An unreadable row cannot reliably be classified as draft or mail.
-            # Isolate the row rather than guessing its contents or losing peers.
-            if not isinstance(raw_json, str) or not _valid_text(raw_json):
-                _record_skip(skipped, thread_id)
-                continue
-            if len(raw_json.encode("utf-8")) > MAX_ROW_JSON_BYTES:
-                _record_skip(skipped, thread_id)
+            if (
+                not isinstance(raw_json, str)
+                or not _valid_text(raw_json)
+                or len(raw_json.encode("utf-8")) > MAX_ROW_JSON_BYTES
+            ):
+                skipped_records += 1
                 continue
             try:
                 thread = json.loads(raw_json)
             except (ValueError, RecursionError):
-                _record_skip(skipped, thread_id)
+                skipped_records += 1
                 continue
             if not isinstance(thread, dict) or not isinstance(
                 thread.get("messages"), list
             ):
-                _record_skip(skipped, thread_id)
+                skipped_records += 1
                 continue
             messages = thread["messages"]
             inspected_before_thread = inspected
@@ -782,7 +763,7 @@ def _scan_account(
                 except ReaderError as exc:
                     if exc.code != "MALFORMED_CACHE_JSON":
                         raise
-                    _record_skip(skipped, thread_id, raw_message)
+                    skipped_records += 1
                     continue
                 message_id = item["message_id"]
                 identity = f"{thread_id}\0{message_id}"
@@ -830,7 +811,7 @@ def _scan_account(
     if len(records) > MAX_MESSAGES_PER_ACCOUNT:
         reasons.append("ACCOUNT_MESSAGE_LIMIT")
         records = records[:MAX_MESSAGES_PER_ACCOUNT]
-    if skipped["count"]:
+    if skipped_records:
         reasons.append("MALFORMED_CACHE_RECORDS")
     facts = {
         "account_id": account,
@@ -839,7 +820,7 @@ def _scan_account(
         "messages_inspected": inspected,
         "messages_eligible": eligible,
         "messages_emitted": len(records),
-        "skipped_records": skipped,
+        "skipped_records": skipped_records,
         "coverage": "truncated" if reasons else "complete",
         "truncation_reasons": reasons,
         "query": {
@@ -917,7 +898,6 @@ def contract_limits() -> dict[str, int]:
         "threads_per_account": MAX_THREADS_PER_ACCOUNT,
         "messages_inspected_per_account": MAX_MESSAGES_INSPECTED_PER_ACCOUNT,
         "messages_per_account": MAX_MESSAGES_PER_ACCOUNT,
-        "skipped_record_details_per_account": MAX_SKIPPED_RECORD_DETAILS_PER_ACCOUNT,
         "records": MAX_RECORDS,
         "participants_per_message": MAX_PARTICIPANTS_PER_MESSAGE,
         "participants_global": MAX_PARTICIPANTS,

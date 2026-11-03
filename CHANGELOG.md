@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- isolate malformed cached draft/message records during read-only `shm reader scan`, returning valid results with explicit incomplete coverage and bounded ID-only skip diagnostics
+- isolate malformed cached draft/message records during read-only `shm reader scan`, returning valid results with explicit incomplete coverage and per-account skip counts
 - identify `shm` HTTP requests explicitly so Superhuman's account service does not reject auth bootstrap as Python's default urllib client
 - add the versioned, bounded, privacy-aware `shm reader scan` local-cache contract with secure transient snapshots and deterministic multi-account results
 - make the `shm` launcher self-contained with `uv` and install it on PATH through `scripts/setup.sh`, removing dependence on an activated repository virtualenv
