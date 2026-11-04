@@ -102,6 +102,12 @@ shm thread list [--limit N] [--unread] [--participants] [--fail-empty] [--accoun
 shm thread search <query> [--limit N] [--unread] [--participants] [--fail-empty] [--account email]
 ```
 
+`shm` lists attachments but can't download them. For a Gmail account, download one with `gog`, using the message `id` from `shm thread messages` and the attachment's 0-based position in that message's `attachments` list:
+
+```bash
+gog gmail attachment <message_id> <position> --use-indexed-attachment-ids --account <email> --out <dir>
+```
+
 ### Opens / read receipts
 
 ```bash
